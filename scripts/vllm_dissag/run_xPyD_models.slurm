@@ -25,6 +25,7 @@ VALID_MODELS=( \
     "amd-Llama-3.3-70B-Instruct-FP8-KV" \
     "DeepSeek-V3" \
     "gpt-oss-120b" \
+    "DeepSeek-R1" \
 )
 
 
@@ -34,6 +35,7 @@ declare -A MODEL_RUNFILES=(
     ["amd-Llama-3.3-70B-Instruct-FP8-KV"]="vllm_disagg_server.sh"
     ["DeepSeek-V3"]="vllm_disagg_server.sh"
     ["gpt-oss-120b"]="vllm_disagg_server.sh"
+    ["DeepSeek-R1"]="vllm_disagg_mori_ep.sh"
 )
 
 # Check if MODEL_NAME exists and fetch runfile
@@ -324,6 +326,7 @@ docker run --rm \
     --ulimit nofile=131072:131072 \
     -v ${LOG_PATH}:/run_logs \
     -v $NIXL_REPO_DIR:$NIXL_COOKBOOK_PATH \
+    --entrypoint /bin/bash \
     -e SLURM_JOB_ID=$SLURM_JOB_ID \
     -e SLURM_JOB_NODELIST=$SLURM_JOB_NODELIST \
     -e NNODES=$NNODES \
@@ -342,7 +345,7 @@ docker run --rm \
     -e ROUTER_PORT=${ROUTER_PORT:-2584} \
     -e BENCHMARK_PORT=${BENCHMARK_PORT:-2584} \
     --name $DOCKER_CONT_NAME \
-    $DOCKER_IMAGE_NAME bash -c "
+    $DOCKER_IMAGE_NAME -c "
         mkdir -p /run_logs/${SLURM_JOB_ID}
         $RUN_FILE_FULL 2>&1 | tee /run_logs/${SLURM_JOB_ID}/pd_vllm_bench_NODE${SLURM_PROCID}.log
     "
