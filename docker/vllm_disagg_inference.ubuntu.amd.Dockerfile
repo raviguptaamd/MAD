@@ -1,5 +1,5 @@
-ARG BASE_IMAGE=vllm/vllm-openai-rocm:nightly-c133f3374625652c88e122fff995e4126c4635c0
-#ARG BASE_IMAGE=rocm/vllm-dev:base_torch2.10_triton3.6_rocm7.2_torch_build_20260216
+#ARG BASE_IMAGE=vllm/vllm-openai-rocm:nightly-c133f3374625652c88e122fff995e4126c4635c0
+ARG BASE_IMAGE=rocm/vllm-dev:base_torch2.10_triton3.6_rocm7.2_torch_build_20260216
 FROM ${BASE_IMAGE}
 
 ENTRYPOINT []
@@ -21,6 +21,8 @@ ENV _NIXLBENCH_INSTALL_DIR=/usr/local/RIXL
 
 ARG GFX_COMPILATION_ARCH="gfx942"
 ARG NIC_COMPILATION_ARCH="cx7"
+ARG VLLM_REPO=https://github.com/vllm-project/vllm.git
+ARG VLLM_COMMIT=7d6917bef552d6aff70142ab9fb8af648081d4db
 
 RUN pip3 install meson==0.64.0
 RUN pip3 install "pybind11[global]"
@@ -157,22 +159,23 @@ RUN echo "DEEPEP_BRANCH=\"$(git log | head -1 | awk '{print $2}' | cut -c1-8)\""
 RUN PYTORCH_ROCM_ARCH=$GFX_COMPILATION_ARCH  CFLAGS="-O3 -fPIC" CXXFLAGS="-O3 -fPIC --offload-arch=$GFX_COMPILATION_ARCH" HIP_CXX_FLAGS="-O3 -fPIC" \
     python3 setup.py --variant rocm --nic $NIC_COMPILATION_ARCH build develop
 
-# TODO: uninstall and re-install should be removed after upstream is stable.
-# Only need tests/ for toy_proxy_server.py; base image already has vLLM installed
-    #pip install -r requirements/rocm.txt && \
-    #pip install -r requirements/kv_connectors_rocm.txt && \
-    #PYTORCH_ROCM_ARCH=$GFX_COMPILATION_ARCH python setup.py bdist_wheel --dist-dir=dir && \
-    #pip install dist/*.whl && \
-#RUN pip uninstall -y vllm
-#RUN git clone --recursive https://github.com/vllm-project/vllm.git /tmp/vllm-src && \
-#    cd /tmp/vllm-src && \
-#    git checkout 7d6917bef552d6aff70142ab9fb8af648081d4db && \
-#    cp -r /tmp/vllm-src/tests /app/vllm/tests
-
-# Only need tests/ for toy_proxy_server.py; base image already has vLLM installed
-RUN git clone --depth 1 https://github.com/vllm-project/vllm.git /tmp/vllm-src && \
-    cp -r /tmp/vllm-src/tests /app/vllm/tests && \
-    rm -rf /tmp/vllm-src
+# Uninstall vLLM from the base image, then install the pinned commit from source (ROCm).
+# TODO: Remove this installation details after upstream vllm is stable.
+RUN pip uninstall -y vllm || true
+RUN pip install setuptools-scm huggingface-hub[cli]
+RUN rm -rf /tmp/vllm-src && \
+    git clone --recursive "${VLLM_REPO}" /tmp/vllm-src && \
+    cd /tmp/vllm-src && \
+    git checkout "${VLLM_COMMIT}" && \
+    git submodule update --init --recursive && \
+    pip install -r requirements/rocm.txt && \
+    pip install -r requirements/kv_connectors_rocm.txt && \
+    PYTORCH_ROCM_ARCH=${GFX_COMPILATION_ARCH} python setup.py install || true && \
+    mkdir -p /app/vllm && \
+    cp -r tests /app/vllm/tests && \
+    cp -r examples /app/vllm/examples && \
+    cp -r benchmarks /app/vllm/benchmarks && \
+    rm -rf /tmp/vllm-src   
 
 WORKDIR /app    
 
