@@ -163,6 +163,7 @@ RUN PYTORCH_ROCM_ARCH=$GFX_COMPILATION_ARCH  CFLAGS="-O3 -fPIC" CXXFLAGS="-O3 -f
 # TODO: Remove this installation details after upstream vllm is stable.
 RUN pip uninstall -y vllm || true
 RUN pip install setuptools-scm huggingface-hub[cli]
+RUN pip install quart msgpack  --ignore-installed blinker
 RUN rm -rf /tmp/vllm-src && \
     git clone --recursive "${VLLM_REPO}" /tmp/vllm-src && \
     cd /tmp/vllm-src && \
