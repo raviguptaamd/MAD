@@ -14,6 +14,10 @@ MODEL_PATH=$MODEL_PATH
 MODEL_NAME="${MODEL_NAME:-}"
 xP="${xP:-1}"
 yD="${yD:-1}"
+if [ "$xP" -gt 1 ] || [ "$yD" -gt 1 ]; then
+    echo "Error: xP > 1 or yD > 1 is not supported yet due to MoRI IO connector issues." >&2
+    exit 1
+fi
 IPADDRS="${IPADDRS:-localhost}"
 # Comma-separated IPs from Slurm (same order as NODE_RANK). Used by socket_barrier, not for log names.
 IFS=',' read -ra IP_ARRAY <<< "${IPADDRS}"
@@ -128,6 +132,10 @@ if [ "$NODE_RANK" -eq 0 ]; then
         "max_tokens" : 10,
         "top_k": 1
     }'
+
+    sleep 20;
+    export BENCHMARK_PORT=10001;
+    bash $NIXL_COOKBOOK_PATH/benchmark_xPyD.sh
 
     echo "Killing the proxy server.."
     kill $proxy_pid;

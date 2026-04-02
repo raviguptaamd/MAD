@@ -28,42 +28,12 @@ VALID_MODELS=( \
     "DeepSeek-R1" \
 )
 
-
-# Each model has an associated run file - Set it here
-declare -A MODEL_RUNFILES=(
-    ["Llama-3.1-405B-Instruct-FP8-KV"]="vllm_disagg_server.sh"
-    ["amd-Llama-3.3-70B-Instruct-FP8-KV"]="vllm_disagg_server.sh"
-    ["DeepSeek-V3"]="vllm_disagg_server.sh"
-    ["gpt-oss-120b"]="vllm_disagg_server.sh"
-    ["DeepSeek-R1"]="vllm_disagg_mori_ep.sh"
+# Models allowed for vllm_disagg_mori_ep.sh when RUN_MORI=1
+MORI_EP_VALID_MODELS=( \
+    "DeepSeek-R1" \
 )
 
-# Check if MODEL_NAME exists and fetch runfile
-if [[ -n "${MODEL_RUNFILES[$MODEL_NAME]}" ]]; then
-    RUN_FILE="${MODEL_RUNFILES[$MODEL_NAME]}"
-    echo "Model found: $MODEL_NAME"
-    echo "Runfile set: $RUN_FILE"
-else
-    echo "Error: Model '$MODEL_NAME' not found in MODEL_RUNFILES"
-    echo "Available models: ${!MODEL_RUNFILES[@]}"
-    exit 1
-fi
-
-export DOCKER_IMAGE_NAME="${DOCKER_IMAGE_NAME:-rocm/vllm:v0.14.0_amd_dev}"
-if test -z "${DOCKER_IMAGE_NAME}"; then
-  echo "Error: DOCKER_IMAGE_NAME is not set or empty."
-  exit 1
-fi
-
-# Set current directory to be REPO directory with all relevant scripts
-NIXL_REPO_DIR=$(pwd)
-LOG_PATH="${LOG_PATH:-/shared_inference/${USER}/model_blog_logs}"
-
-xP="${xP:-1}" #-> Number of Prefill Servers
-yD="${yD:-1}" #-> Number of Decode Servers
-
 MODEL_NAME="${MODEL_NAME:-None}"
-MODEL_DIR="${MODEL_DIR:-"/shared_inference/models_blog/"}"
 
 validate_model_name() {
   local is_valid_model=false
@@ -88,6 +58,46 @@ validate_model_name() {
 }
 
 validate_model_name "${MODEL_NAME}"
+
+model_allows_mori_ep() {
+  local m="$1"
+  for x in "${MORI_EP_VALID_MODELS[@]}"; do
+    [[ "$m" == "$x" ]] && return 0
+  done
+  return 1
+}
+
+if [[ "${RUN_MORI:-0}" == "1" ]]; then
+  if model_allows_mori_ep "$MODEL_NAME"; then
+    RUN_FILE="vllm_disagg_mori_ep.sh"
+    echo "RUN_MORI=1: using $RUN_FILE for model '$MODEL_NAME'"
+  else
+    echo "Error: RUN_MORI=1 but MODEL_NAME '$MODEL_NAME' is not in MORI_EP_VALID_MODELS"
+    printf "MoRI EP allowed models:\n"
+    for m in "${MORI_EP_VALID_MODELS[@]}"; do
+      printf "  - %s\n" "$m"
+    done
+    exit 1
+  fi
+else
+  RUN_FILE="vllm_disagg_server.sh"
+  echo "RUN_MORI not set to 1: using $RUN_FILE"
+fi
+
+export DOCKER_IMAGE_NAME="${DOCKER_IMAGE_NAME:-rocm/vllm:v0.14.0_amd_dev}"
+if test -z "${DOCKER_IMAGE_NAME}"; then
+  echo "Error: DOCKER_IMAGE_NAME is not set or empty."
+  exit 1
+fi
+
+# Set current directory to be REPO directory with all relevant scripts
+NIXL_REPO_DIR=$(pwd)
+LOG_PATH="${LOG_PATH:-/shared_inference/${USER}/model_blog_logs}"
+
+xP="${xP:-1}" #-> Number of Prefill Servers
+yD="${yD:-1}" #-> Number of Decode Servers
+
+MODEL_DIR="${MODEL_DIR:-"/shared_inference/models_blog/"}"
 
 
 # ------------------------
