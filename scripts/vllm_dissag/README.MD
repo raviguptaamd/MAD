@@ -1,4 +1,4 @@
-## List of Models - focus VLLM Dissagerated P/D inference
+## List of Models - focus VLLM Disaggregated P/D inference
 
 Dense Models
 - deepseek-ai/DeepSeek-V3 (https://huggingface.co/deepseek-ai/DeepSeek-V3)
@@ -11,7 +11,7 @@ This repository contains scripts and documentation to launch PD Disaggregation u
 ## 📝 Prerequisites
 
 - A Slurm cluster with required Nodes -> xP + yD + 1 (minimum size 3: xP=1 and xD=1)
-- Docker container with VLLM, Nixl, etcd and NIC drivers built-in. Refer to Building the Docker image section below.
+- Docker container with VLLM, Nixl and NIC drivers built-in. Refer to Building the Docker image section below.
 - Access to a shared filesystem for log collection( cluster specific)
 
 

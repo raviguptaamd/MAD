@@ -142,40 +142,6 @@ python $NIXL_COOKBOOK_PATH/socket_barrier.py \
     --node-ports 5000
 
 # =============================================================================
-# ETCD Server Setup
-# =============================================================================
-
-echo "Proceeding to start etcd server on $host_name"
-
-${NIXL_COOKBOOK_PATH}/start_etcd.sh > /dev/null &
-etcd_pid=$!
-
-echo "Waiting at etcd server barrier on $host_name"
-python $NIXL_COOKBOOK_PATH/socket_barrier.py \
-    --node-ips ${IPADDRS} \
-    --node-ports 2379
-
-echo "All etcd servers are up : $host_name"
-sleep 3
-
-echo "etcd endpoint health=================="
-/usr/local/bin/etcd//etcdctl endpoint health
-echo "======================================"
-
-echo "etcd member list======================"
-/usr/local/bin/etcd//etcdctl member list
-echo "======================================"
-
-echo "etcd status======================"
-/usr/local/bin/etcd//etcdctl endpoint status --write-out=table
-echo "======================================"
-
-
-echo "Waiting at etcd server barrier on $host_name"
-python $NIXL_COOKBOOK_PATH/socket_barrier.py --node-ips ${IPADDRS} --node-ports 2379
-# END SECTION===========================================================================
-
-# =============================================================================
 # Cluster Topology Configuration
 # =============================================================================
 IFS=',' read -ra IP_ARRAY <<< "$IPADDRS"
@@ -327,7 +293,7 @@ elif  [ "$NODE_RANK" -gt 0 ] && [ "$NODE_RANK" -le "$xP" ]; then
         --node-ips ${MASTER_ADDR} \
         --node-ports $PROXY_PORT
 
-    echo "Waiting untill proxy server closes..."
+    echo "Waiting until proxy server closes..."
     python $NIXL_COOKBOOK_PATH/socket_wait.py \
         --remote-ip ${MASTER_ADDR} \
         --remote-port $PROXY_PORT
@@ -379,7 +345,7 @@ else
         --node-ips ${MASTER_ADDR} \
         --node-ports $PROXY_PORT
 
-    echo "Waiting untill proxy server closes..."
+    echo "Waiting until proxy server closes..."
     python $NIXL_COOKBOOK_PATH/socket_wait.py \
         --remote-ip ${MASTER_ADDR} \
         --remote-port $PROXY_PORT
@@ -388,9 +354,6 @@ else
     kill $decode_pid
 
 fi
-
-echo "Killing the etcd server"
-kill $etcd_pid 
 
 echo "Script completed successfully"
 exit 0
