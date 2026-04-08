@@ -67,7 +67,6 @@ RUN set -e && apt update && \
     make install && \
     cd ../..
 
-
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/
 ENV PATH=/root/.local/bin:${_UCX_INSTALL_DIR}/bin:$PATH
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${_RIXL_INSTALL_DIR}/lib/x86_64-linux-gnu
@@ -164,7 +163,9 @@ WORKDIR /app
 ENV ROCSHMEM_TEST_UUID=1
 ENV ROCSHMEM_HEAP_SIZE=6442450944
 
-RUN pip install py-spy && pip install --ignore-installed --force-reinstall flask
+RUN pip install --upgrade vllm-router && \
+    pip install py-spy && \
+    pip install --ignore-installed --force-reinstall flask
 
 RUN echo "UCX_REPO=${_UCX_SOURCE}" >> /app/versions.txt && \
     echo "UCX_BRANCH=${_UCX_BRANCH}" >> /app/versions.txt && \
