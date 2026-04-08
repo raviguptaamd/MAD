@@ -84,11 +84,11 @@ else
   echo "RUN_MORI not set to 1: using $RUN_FILE"
 fi
 
-export DOCKER_IMAGE_NAME="${DOCKER_IMAGE_NAME:-rocm/vllm:v0.14.0_amd_dev}"
-if test -z "${DOCKER_IMAGE_NAME}"; then
-  echo "Error: DOCKER_IMAGE_NAME is not set or empty."
+if [[ -z "${DOCKER_IMAGE_NAME:-}" ]]; then
+  echo "Error: DOCKER_IMAGE_NAME is not set. Please export DOCKER_IMAGE_NAME before running."
   exit 1
 fi
+export DOCKER_IMAGE_NAME
 
 # Set current directory to be REPO directory with all relevant scripts
 NIXL_REPO_DIR=$(pwd)
@@ -176,7 +176,6 @@ echo ""
 
 # Calculate NUM_NODES based on xP and yD
 NUM_NODES=$((xP + yD + 1))
-echo "Calculated NUM_NODES: $NUM_NODES (xP=$xP + yD=$yD + 1)"
 echo "Calculated NUM_NODES: $NUM_NODES (xP=$xP + yD=$yD + 1)"
 
 # ------------------------

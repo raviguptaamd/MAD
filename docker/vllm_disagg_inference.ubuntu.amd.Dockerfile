@@ -1,4 +1,3 @@
-#ARG BASE_IMAGE=vllm/vllm-openai-rocm:nightly-c133f3374625652c88e122fff995e4126c4635c0
 ARG BASE_IMAGE=rocm/vllm-dev:base_torch2.10_triton3.6_rocm7.2_torch_build_20260216
 FROM ${BASE_IMAGE}
 
@@ -6,7 +5,7 @@ ENTRYPOINT []
 
 WORKDIR /root
 
-RUN sed -i 's/http/https/g' /etc/apt/sources.list
+RUN sed -i 's|http://|https://|g' /etc/apt/sources.list
 
 ENV _ROCM_DIR=/opt/rocm
 
@@ -86,12 +85,9 @@ RUN set -e && echo "Compiling etcd-cpp API" && \
     echo "etcd-cpp installation completed."
 
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/
-#ENV CMAKE_PREFIX_PATH=$CMAKE_PREFIX_PATH:/usr/local/lib/cmake/etcd-cpp-api/
 ENV PATH=/root/.local/bin:${_UCX_INSTALL_DIR}/bin:$PATH
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:${_RIXL_INSTALL_DIR}/lib/x86_64-linux-gnu
-#ENV CMAKE_PREFIX_PATH=/usr/local/lib/cmake/etcd-cpp-api/:/usr/grpc/lib/cmake/:/usr/local/lib/cmake
 
-#git checkout ed772c8d0d8a47c7b4e1a622b13c4f6087a4972a && \
 RUN set -e && git clone ${_RIXL_SOURCE} && \
     cd RIXL && \
     git checkout ${_RIXL_BRANCH} && \
@@ -134,9 +130,9 @@ RUN pip install vllm-router
 
 WORKDIR /app
 
-# not installing mori since its already installed in vllm container.
+# versions.txt is provided by the base image and contains MORI_REPO / MORI_BRANCH entries.
 RUN pip install tqdm prettytable
-RUN git clone --recursive $(grep '^MORI_REPO:' versions.txt | cut -d' ' -f2) && \
+RUN git clone --recursive $(grep '^MORI_REPO:' /app/versions.txt | cut -d' ' -f2) && \
     cd mori && \
     git checkout $(grep '^MORI_BRANCH:' /app/versions.txt | cut -d' ' -f2)
 
@@ -171,21 +167,24 @@ RUN rm -rf /tmp/vllm-src && \
     git submodule update --init --recursive && \
     pip install -r requirements/rocm.txt && \
     pip install -r requirements/kv_connectors_rocm.txt && \
-    PYTORCH_ROCM_ARCH=${GFX_COMPILATION_ARCH} python setup.py install || true && \
+    (PYTORCH_ROCM_ARCH=${GFX_COMPILATION_ARCH} python setup.py install || \
+        echo "WARNING: vLLM build from source failed; container may be broken") && \
     mkdir -p /app/vllm && \
     cp -r tests /app/vllm/tests && \
     cp -r examples /app/vllm/examples && \
     cp -r benchmarks /app/vllm/benchmarks && \
-    rm -rf /tmp/vllm-src   
+    rm -rf /tmp/vllm-src
 
-WORKDIR /app    
+WORKDIR /app
 
-ENV ROCSHMEM_TEST_UUID=1 
+ENV ROCSHMEM_TEST_UUID=1
 ENV ROCSHMEM_HEAP_SIZE=6442450944
 
-RUN echo "UCX_REPO=${_UCX_SOURCE}" >> /app/versions.txt
-RUN echo "UCX_BRANCH=${_UCX_BRANCH}" >> /app/versions.txt
-RUN echo "RIXL_REPO=${_RIXL_SOURCE}" >> /app/versions.txt
-RUN echo "RIXL_BRANCH=${_RIXL_BRANCH}" >> /app/versions.txt
+RUN pip install py-spy && pip install --ignore-installed --force-reinstall flask
+
+RUN echo "UCX_REPO=${_UCX_SOURCE}" >> /app/versions.txt && \
+    echo "UCX_BRANCH=${_UCX_BRANCH}" >> /app/versions.txt && \
+    echo "RIXL_REPO=${_RIXL_SOURCE}" >> /app/versions.txt && \
+    echo "RIXL_BRANCH=${_RIXL_BRANCH}" >> /app/versions.txt
 
 RUN cat /app/versions.txt

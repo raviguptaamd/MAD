@@ -64,7 +64,7 @@ declare -A MODEL_PREFILL_CONFIGS=(
     ["Llama-3.1-405B-Instruct-FP8-KV"]="--tensor-parallel-size 8 --kv-cache-dtype fp8"
     ["amd-Llama-3.3-70B-Instruct-FP8-KV"]="--tensor-parallel-size 8 --max-model-len 65536 --kv-cache-dtype fp8"
     ["DeepSeek-V3"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
-    ["DeepSeek-R1"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
+    ["DeepSeek-R1"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"  # same arch as V3
     ["gpt-oss-120b"]="--tensor-parallel-size 8"
 )
 
@@ -72,7 +72,7 @@ declare -A MODEL_DECODE_CONFIGS=(
     ["Llama-3.1-405B-Instruct-FP8-KV"]="--tensor-parallel-size 8 --kv-cache-dtype fp8"
     ["amd-Llama-3.3-70B-Instruct-FP8-KV"]="--tensor-parallel-size 8 --max-model-len 65536 --kv-cache-dtype fp8"
     ["DeepSeek-V3"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
-    ["DeepSeek-R1"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
+    ["DeepSeek-R1"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"  # same arch as V3
     ["gpt-oss-120b"]="--tensor-parallel-size 8"
 )
 
@@ -80,7 +80,7 @@ declare -A MODEL_ENVS=(
     ["amd-Llama-3.3-70B-Instruct-FP8-KV"]="VLLM_USE_V1=1 VLLM_V1_USE_PREFILL_DECODE_ATTENTION=1 AMDGCN_USE_BUFFER_OPS=1 VLLM_ROCM_USE_AITER=1 VLLM_ROCM_USE_AITER_RMSNORM=1 VLLM_USE_AITER_TRITON_ROPE=1 TRITON_HIP_ASYNC_COPY_BYPASS_PERMUTE=1 TRITON_HIP_USE_ASYNC_COPY=1 TRITON_HIP_USE_BLOCK_PINGPONG=1 TRITON_HIP_ASYNC_FAST_SWIZZLE=1 "
     ["Llama-3.1-405B-Instruct-FP8-KV"]="VLLM_USE_V1=1 VLLM_V1_USE_PREFILL_DECODE_ATTENTION=1 AMDGCN_USE_BUFFER_OPS=1 VLLM_ROCM_USE_AITER=1 VLLM_ROCM_USE_AITER_RMSNORM=1 VLLM_USE_AITER_TRITON_ROPE=1 TRITON_HIP_ASYNC_COPY_BYPASS_PERMUTE=1 TRITON_HIP_USE_ASYNC_COPY=1 TRITON_HIP_USE_BLOCK_PINGPONG=1 TRITON_HIP_ASYNC_FAST_SWIZZLE=1 "
     ["DeepSeek-V3"]="VLLM_USE_V1=1 VLLM_ROCM_USE_AITER=1 VLLM_ROCM_USE_AITER_PAGED_ATTN=0 VLLM_ROCM_USE_AITER_RMSNORM=1 VLLM_USE_AITER_TRITON_SILU_MUL=0 "
-    ["DeepSeek-R1"]="VLLM_USE_V1=1 VLLM_ROCM_USE_AITER=1 VLLM_ROCM_USE_AITER_PAGED_ATTN=0 VLLM_ROCM_USE_AITER_RMSNORM=1 VLLM_USE_AITER_TRITON_SILU_MUL=0 "
+    ["DeepSeek-R1"]="VLLM_USE_V1=1 VLLM_ROCM_USE_AITER=1 VLLM_ROCM_USE_AITER_PAGED_ATTN=0 VLLM_ROCM_USE_AITER_RMSNORM=1 VLLM_USE_AITER_TRITON_SILU_MUL=0 "  # same arch as V3
     ["gpt-oss-120b"]="VLLM_USE_V1=1 VLLM_ROCM_USE_AITER=1 VLLM_ROCM_USE_AITER_TRITON_BF16_GEMM=0 VLLM_USE_AITER_UNIFIED_ATTENTION=1 VLLM_ROCM_USE_AITER_MHA=0 ROCM_TRITON_MOE_PRESHUFFLE_SCALES=0 "
 )
 

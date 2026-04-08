@@ -1,5 +1,5 @@
 #!/bin/bash
-# VLLM Disaggregated Server Launcher with Model-Specific Configurations
+# VLLM Disaggregated Server Launcher - MoRI EP Configuration
 # =============================================================================
 
 # =============================================================================
@@ -19,22 +19,26 @@ if [ "$xP" -gt 1 ] || [ "$yD" -gt 1 ]; then
     exit 1
 fi
 IPADDRS="${IPADDRS:-localhost}"
-# Comma-separated IPs from Slurm (same order as NODE_RANK). Used by socket_barrier, not for log names.
 IFS=',' read -ra IP_ARRAY <<< "${IPADDRS}"
 
 echo "Listing NIXL_COOKBOOK_PATH : "
 ls ${NIXL_COOKBOOK_PATH}
 
 # =============================================================================
-# Dependencies and Environment Setup
+# Port Configuration
 # =============================================================================
 
-pip install py-spy
-pip install --ignore-installed --force-reinstall flask
-
+RPC_PORT=13345
+SERVE_PORT=20005
+KV_PORT=9711
+PROXY_PORT=10001
+PROXY_PING_PORT=36367
+LOCAL_PING_PORT=61555
+HANDSHAKE_PORT=8405
+NOTIFY_PORT=61005
 
 # =============================================================================
-# Node-Specific Configuration Maps
+# Node-Specific Configuration
 # =============================================================================
 
 PREFILL_DP_SIZE=$((xP * 8))
@@ -44,7 +48,6 @@ PREFILL_DP_START_RANK=$(( (NODE_RANK - 1) * 8 ))
 PREFILL_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' '{print $2}')
 DECODE_DP_START_RANK=$(( (NODE_RANK - xP - 1) * 8 ))
 DECODE_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' -v pos="$xP" '{print $(pos+2)}')
-PROXY_PORT=10001
 
 echo "-----------------------------Printing node specific details ----------------------"
 echo "IPADDRS = ${IPADDRS}"
@@ -62,6 +65,104 @@ host_name=$(hostname)
 echo "Listing NIXL_COOKBOOK_PATH : "
 ls ${NIXL_COOKBOOK_PATH}
 
+# =============================================================================
+# Helper Functions
+# =============================================================================
+
+setup_mori_env() {
+    export VLLM_ROCM_USE_AITER=1
+    export VLLM_ROCM_USE_AITER_MOE=1
+    export VLLM_LOGGING_LEVEL=INFO
+    export VLLM_USE_V1=1
+    export VLLM_ROCM_USE_AITER_MLA=1
+    export VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0
+    export VLLM_ALL2ALL_BACKEND=mori
+    export GLOO_SOCKET_IFNAME=eth0
+    export VLLM_ENGINE_READY_TIMEOUT_S=3600
+    export VLLM_RINGBUFFER_WARNING_INTERVAL=3600
+    export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3600
+}
+
+build_kv_transfer_config() {
+    local kv_role="$1"
+    echo '{"kv_connector":"MoRIIOConnector","kv_role":"'"${kv_role}"'","kv_port":"'"${KV_PORT}"'","kv_connector_extra_config":{"proxy_ip":"'"${MASTER_ADDR}"'","proxy_port":"'"${PROXY_PORT}"'","proxy_ping_port":"'"${PROXY_PING_PORT}"'","http_port":"'"${SERVE_PORT}"'","local_ping_port":"'"${LOCAL_PING_PORT}"'","handshake_port":"'"${HANDSHAKE_PORT}"'","notify_port":"'"${NOTIFY_PORT}"'"}}'
+}
+
+# Launch a vllm serve worker and set WORKER_PID to its PID.
+#   $1 = dp_size       data-parallel size
+#   $2 = dp_addr        data-parallel master address
+#   $3 = kv_role        "kv_producer" or "kv_consumer"
+#   $4 = log_prefix     "prefill" or "decode"
+#   $5 = role           "master" or "child"
+#   $6 = dp_start_rank  (required for child nodes)
+launch_vllm_worker() {
+    local dp_size="$1"
+    local dp_addr="$2"
+    local kv_role="$3"
+    local log_prefix="$4"
+    local role="$5"
+    local dp_start_rank="${6:-}"
+
+    setup_mori_env
+
+    local extra_args=()
+    if [[ "$role" == "master" ]]; then
+        extra_args+=(--api-server-count=8)
+    else
+        extra_args+=(--data-parallel-start-rank "${dp_start_rank}" --headless)
+    fi
+
+    local kv_config
+    kv_config=$(build_kv_transfer_config "${kv_role}")
+
+    vllm serve ${MODEL_PATH} \
+        -tp 1 \
+        --data-parallel-size "${dp_size}" \
+        --data-parallel-size-local ${DP_PARALLEL_SIZE_LOCAL} \
+        --data-parallel-address "${dp_addr}" \
+        --data-parallel-rpc-port ${RPC_PORT} \
+        --enable-expert-parallel \
+        --port ${SERVE_PORT} \
+        --gpu-memory-utilization 0.8 \
+        --kv-cache-dtype fp8 \
+        --block-size 1 \
+        --no-enable-prefix-caching \
+        --all2all-backend mori \
+        --trust-remote-code \
+        --enforce-eager \
+        "${extra_args[@]}" \
+        --kv-transfer-config "${kv_config}" \
+        2>&1 | tee /run_logs/${SLURM_JOB_ID}/${log_prefix}_NODE${NODE_RANK}.log > /dev/null &
+
+    WORKER_PID=$!
+}
+
+wait_for_proxy_and_cleanup() {
+    local worker_pid="$1"
+    local label="$2"
+
+    echo "Waiting for proxy server to be up..."
+    python $NIXL_COOKBOOK_PATH/socket_barrier.py \
+        --node-ips ${MASTER_ADDR} \
+        --node-ports $PROXY_PORT
+
+    echo "Waiting until proxy server closes..."
+    python $NIXL_COOKBOOK_PATH/socket_wait.py \
+        --remote-ip ${MASTER_ADDR} \
+        --remote-port $PROXY_PORT
+
+    echo "Killing the ${label} server"
+    kill "$worker_pid" 2>/dev/null || true
+}
+
+print_node_info() {
+    local role_desc="$1"
+    echo "========= NODE INFO ===================="
+    echo "Node list : ${SLURM_JOB_NODELIST}"
+    echo "Node IPs  : ${IPADDRS}"
+    echo "Model     : ${MODEL_NAME}"
+    echo "${host_name}:${host_ip} is ${role_desc}."
+}
 
 # =============================================================================
 # Container Synchronization
@@ -75,22 +176,20 @@ python $NIXL_COOKBOOK_PATH/socket_barrier.py \
     --node-ips ${IPADDRS} \
     --node-ports 2222
 
+# =============================================================================
+# Node Role Assignment and Server Launch
+# =============================================================================
+
 if [ "$NODE_RANK" -eq 0 ]; then
-    echo "========= NODE INFO ===================="
-    echo "Node list : ${SLURM_JOB_NODELIST}"
-    echo "Node IPs  : ${IPADDRS}"
-    echo "Model     : ${MODEL_NAME}"
-    echo "${host_name}:${host_ip} is Proxy node."
+    print_node_info "Proxy node"
 
     echo "Proxy server is waiting for prefill & decode nodes to be ready ... "
-    sleep 20;
+    sleep 20
 
     TIMEOUT_SECONDS=4000
     SLEEP_SECONDS=10
     SEARCH_SIGNAL="Application startup complete."
 
-    # Only NODE_RANK 1 runs the prefill vllm process (see branch below); ranks 2..xP are stubs with no logs.
-    # Only NODE_RANK $((xP+1)) runs decode. Waiting for prefill_NODE2..prefill_NODExP or missing decode logs loops forever.
     PREFILL_LOG=/run_logs/${SLURM_JOB_ID}/prefill_NODE1.log
     DECODE_LOG=/run_logs/${SLURM_JOB_ID}/decode_NODE$((xP + 1)).log
 
@@ -119,263 +218,61 @@ if [ "$NODE_RANK" -eq 0 ]; then
 
     proxy_pid=$!
 
-    # No extra socket_barrier here: wait_log_signal_or_fail already gates on all prefill + decode worker logs.
-    # socket_barrier with one port and N IPs waits for that port on *every* node; only rank 1 has
-    # 20005 and only rank xP+1 has 40005, so two separate "all nodes on 20005 / 40005" barriers
-    # would be wrong or redundant.
-
     echo "Proxy server ready for benchmarking on ${host_name}:${host_ip}:${PROXY_PORT}"
-    sleep 20;
-    curl -X POST http://127.0.0.1:10001/v1/completions -H "Content-Type: application/json" -d '{
+    sleep 20
+    curl -X POST http://127.0.0.1:${PROXY_PORT}/v1/completions -H "Content-Type: application/json" -d '{
         "prompt": "Who is AMD CEO?",
         "temperature": 0,
         "max_tokens" : 10,
         "top_k": 1
     }'
 
-    sleep 20;
-    export BENCHMARK_PORT=10001;
+    sleep 20
+    export BENCHMARK_PORT=${PROXY_PORT}
     bash $NIXL_COOKBOOK_PATH/benchmark_xPyD.sh
 
     echo "Killing the proxy server.."
-    kill $proxy_pid;
+    kill $proxy_pid
 
 elif [ "$NODE_RANK" -eq 1 ]; then
-    echo "========= NODE INFO ===================="
-    echo "Node list : ${SLURM_JOB_NODELIST}"
-    echo "Node IPs  : ${IPADDRS}"
-    echo "Model     : ${MODEL_NAME}"
-    echo "${host_name}:${host_ip} is Prefill master node."
+    print_node_info "Prefill master node"
     echo "PREFILL_DP_SIZE=${PREFILL_DP_SIZE}"
     echo "PREFILL_DP_START_RANK=${PREFILL_DP_START_RANK}"
     echo "PREFILL_MASTER_ADDR=${PREFILL_MASTER_ADDR}"
     echo "DP_PARALLEL_SIZE_LOCAL=${DP_PARALLEL_SIZE_LOCAL}"
 
-    export VLLM_ROCM_USE_AITER=1
-    export VLLM_ROCM_USE_AITER_MOE=1
-    export VLLM_LOGGING_LEVEL=INFO
-    export VLLM_USE_V1=1
-    export VLLM_ROCM_USE_AITER_MLA=1
-    export VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0
-    export VLLM_ALL2ALL_BACKEND=mori
-    export GLOO_SOCKET_IFNAME=eth0
-    export VLLM_ENGINE_READY_TIMEOUT_S=3600
-    export VLLM_RINGBUFFER_WARNING_INTERVAL=3600
-    export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3600
-
-    vllm serve ${MODEL_PATH} \
-        -tp 1 \
-        --data-parallel-size ${PREFILL_DP_SIZE} \
-        --data-parallel-size-local ${DP_PARALLEL_SIZE_LOCAL} \
-        --data-parallel-address ${PREFILL_MASTER_ADDR} \
-        --data-parallel-rpc-port 13345 \
-        --api-server-count=8 \
-        --enable-expert-parallel \
-        --port 20005 \
-        --gpu_memory_utilization 0.8 \
-        --kv-cache-dtype fp8 \
-        --block-size 1 \
-        --no-enable-prefix-caching \
-        --all2all-backend mori \
-        --trust-remote-code \
-        --enforce-eager \
-        --kv-transfer-config '{"kv_connector":"MoRIIOConnector","kv_role":"kv_producer","kv_port":"9711","kv_connector_extra_config":{"proxy_ip":"'"${MASTER_ADDR}"'","proxy_port":"10001","proxy_ping_port":"36367","http_port":"20005","local_ping_port":"61555","handshake_port":"8405","notify_port":"61005"}}' \
-        2>&1 | tee /run_logs/${SLURM_JOB_ID}/prefill_NODE${NODE_RANK}.log > /dev/null & 
-
-    prefill_master_pid=$!
-    
-    echo "Waiting for proxy server to be up..."
-    python $NIXL_COOKBOOK_PATH/socket_barrier.py \
-        --node-ips ${MASTER_ADDR} \
-        --node-ports $PROXY_PORT
-
-    echo "Waiting untill proxy server closes..."
-    python $NIXL_COOKBOOK_PATH/socket_wait.py \
-        --remote-ip ${MASTER_ADDR} \
-        --remote-port $PROXY_PORT
-
-    echo "Killing the prefill master server"
-    kill $prefill_master_pid
+    launch_vllm_worker "${PREFILL_DP_SIZE}" "${PREFILL_MASTER_ADDR}" "kv_producer" "prefill" "master"
+    wait_for_proxy_and_cleanup $WORKER_PID "prefill master"
 
 elif [ "$NODE_RANK" -gt 1 ] && [ "$NODE_RANK" -le "$xP" ]; then
-    echo "Prefill child nodes."
-    echo "========= NODE INFO ===================="
-    echo "Node list : ${SLURM_JOB_NODELIST}"
-    echo "Node IPs  : ${IPADDRS}"
-    echo "Model     : ${MODEL_NAME}"
-    echo "${host_name}:${host_ip} is Prefill child node."
+    print_node_info "Prefill child node"
     echo "PREFILL_DP_SIZE=${PREFILL_DP_SIZE}"
     echo "PREFILL_DP_START_RANK=${PREFILL_DP_START_RANK}"
     echo "PREFILL_MASTER_ADDR=${PREFILL_MASTER_ADDR}"
     echo "DP_PARALLEL_SIZE_LOCAL=${DP_PARALLEL_SIZE_LOCAL}"
 
-    export VLLM_ROCM_USE_AITER=1
-    export VLLM_ROCM_USE_AITER_MOE=1
-    export VLLM_LOGGING_LEVEL=INFO
-    export VLLM_USE_V1=1
-    export VLLM_ROCM_USE_AITER_MLA=1
-    export VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0
-    export VLLM_ALL2ALL_BACKEND=mori
-    export GLOO_SOCKET_IFNAME=eth0
-    export VLLM_ENGINE_READY_TIMEOUT_S=3600
-    export VLLM_RINGBUFFER_WARNING_INTERVAL=3600
-    export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3600
+    launch_vllm_worker "${PREFILL_DP_SIZE}" "${PREFILL_MASTER_ADDR}" "kv_producer" "prefill" "child" "${PREFILL_DP_START_RANK}"
+    wait_for_proxy_and_cleanup $WORKER_PID "prefill child"
 
-    vllm serve ${MODEL_PATH} \
-        -tp 1 \
-        --data-parallel-size ${PREFILL_DP_SIZE} \
-        --data-parallel-size-local ${DP_PARALLEL_SIZE_LOCAL} \
-        --data-parallel-address ${PREFILL_MASTER_ADDR} \
-        --data-parallel-rpc-port 13345 \
-        --data-parallel-start-rank ${PREFILL_DP_START_RANK} \
-        --headless \
-        --enable-expert-parallel \
-        --port 20005 \
-        --gpu_memory_utilization 0.8 \
-        --kv-cache-dtype fp8 \
-        --block-size 1 \
-        --no-enable-prefix-caching \
-        --all2all-backend mori \
-        --trust-remote-code \
-        --enforce-eager \
-        --kv-transfer-config '{"kv_connector":"MoRIIOConnector","kv_role":"kv_producer","kv_port":"9711","kv_connector_extra_config":{"proxy_ip":"'"${MASTER_ADDR}"'","proxy_port":"10001","proxy_ping_port":"36367","http_port":"20005","local_ping_port":"61555","handshake_port":"8405","notify_port":"61005"}}' \
-        2>&1 | tee /run_logs/${SLURM_JOB_ID}/prefill_NODE${NODE_RANK}.log > /dev/null & 
-
-    prefill_child_pid=$!
-    
-    echo "Waiting for proxy server to be up..."
-    python $NIXL_COOKBOOK_PATH/socket_barrier.py \
-        --node-ips ${MASTER_ADDR} \
-        --node-ports $PROXY_PORT
-
-    echo "Waiting untill proxy server closes..."
-    python $NIXL_COOKBOOK_PATH/socket_wait.py \
-        --remote-ip ${MASTER_ADDR} \
-        --remote-port $PROXY_PORT
-
-    echo "Killing the prefill child server"
-    kill $prefill_child_pid
-    
-
-elif [ "$NODE_RANK" -eq $((xP + 1))  ]; then
-    echo "========= NODE INFO ===================="
-    echo "Node list : ${SLURM_JOB_NODELIST}"
-    echo "Node IPs  : ${IPADDRS}"
-    echo "Model     : ${MODEL_NAME}"
-    echo "${host_name}:${host_ip} is Decode master node."
+elif [ "$NODE_RANK" -eq $((xP + 1)) ]; then
+    print_node_info "Decode master node"
     echo "DECODE_DP_SIZE=${DECODE_DP_SIZE}"
     echo "DECODE_DP_START_RANK=${DECODE_DP_START_RANK}"
     echo "DECODE_MASTER_ADDR=${DECODE_MASTER_ADDR}"
     echo "DP_PARALLEL_SIZE_LOCAL=${DP_PARALLEL_SIZE_LOCAL}"
 
-
-    export VLLM_ROCM_USE_AITER=1
-    export VLLM_ROCM_USE_AITER_MOE=1
-    export VLLM_LOGGING_LEVEL=INFO
-    export VLLM_USE_V1=1
-    export VLLM_ROCM_USE_AITER_MLA=1
-    export VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0
-    export VLLM_ALL2ALL_BACKEND=mori
-    export GLOO_SOCKET_IFNAME=eth0
-    export VLLM_ENGINE_READY_TIMEOUT_S=3600
-    export VLLM_RINGBUFFER_WARNING_INTERVAL=3600
-    export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3600
-
-    vllm serve ${MODEL_PATH} \
-        -tp 1 \
-        --data-parallel-size ${DECODE_DP_SIZE} \
-        --data-parallel-size-local ${DP_PARALLEL_SIZE_LOCAL} \
-        --data-parallel-address ${DECODE_MASTER_ADDR} \
-        --data-parallel-rpc-port 13345 \
-        --api-server-count=8 \
-        --enable-expert-parallel \
-        --port 20005 \
-        --gpu_memory_utilization 0.8 \
-        --kv-cache-dtype fp8 \
-        --block-size 1 \
-        --no-enable-prefix-caching \
-        --all2all-backend mori \
-        --enforce-eager \
-        --trust-remote-code \
-        --kv-transfer-config '{"kv_connector":"MoRIIOConnector","kv_role":"kv_consumer","kv_port":"9711","kv_connector_extra_config":{"proxy_ip":"'"${MASTER_ADDR}"'","proxy_port":"10001","proxy_ping_port":"36367","http_port":"20005","local_ping_port":"61555","handshake_port":"8405","notify_port":"61005"}}' \
-        2>&1 | tee /run_logs/${SLURM_JOB_ID}/decode_NODE${NODE_RANK}.log > /dev/null & 
-        #--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY", "custom_ops": ["+quant_fp8"]}' \
-
-    decode_master_pid=$!
-    
-    echo "Waiting for proxy server to be up..."
-    python $NIXL_COOKBOOK_PATH/socket_barrier.py \
-        --node-ips ${MASTER_ADDR} \
-        --node-ports $PROXY_PORT
-
-    echo "Waiting untill proxy server closes..."
-    python $NIXL_COOKBOOK_PATH/socket_wait.py \
-        --remote-ip ${MASTER_ADDR} \
-        --remote-port $PROXY_PORT
-
-    echo "Killing the decode master server"
-    kill $decode_master_pid
+    launch_vllm_worker "${DECODE_DP_SIZE}" "${DECODE_MASTER_ADDR}" "kv_consumer" "decode" "master"
+    wait_for_proxy_and_cleanup $WORKER_PID "decode master"
 
 else
-    echo "Decode child nodes..."
-    echo "========= NODE INFO ===================="
-    echo "Node list : ${SLURM_JOB_NODELIST}"
-    echo "Node IPs  : ${IPADDRS}"
-    echo "Model     : ${MODEL_NAME}"
-    echo "${host_name}:${host_ip} is Decode child node."
+    print_node_info "Decode child node"
     echo "DECODE_DP_SIZE=${DECODE_DP_SIZE}"
     echo "DECODE_DP_START_RANK=${DECODE_DP_START_RANK}"
     echo "DECODE_MASTER_ADDR=${DECODE_MASTER_ADDR}"
     echo "DP_PARALLEL_SIZE_LOCAL=${DP_PARALLEL_SIZE_LOCAL}"
 
-
-    export VLLM_ROCM_USE_AITER=1
-    export VLLM_ROCM_USE_AITER_MOE=1
-    export VLLM_LOGGING_LEVEL=INFO
-    export VLLM_USE_V1=1
-    export VLLM_ROCM_USE_AITER_MLA=1
-    export VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0
-    export VLLM_ALL2ALL_BACKEND=mori
-    export GLOO_SOCKET_IFNAME=eth0
-    export VLLM_ENGINE_READY_TIMEOUT_S=3600
-    export VLLM_RINGBUFFER_WARNING_INTERVAL=3600
-    export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3600
-
-    vllm serve ${MODEL_PATH} \
-        -tp 1 \
-        --data-parallel-size ${DECODE_DP_SIZE} \
-        --data-parallel-size-local ${DP_PARALLEL_SIZE_LOCAL} \
-        --data-parallel-address ${DECODE_MASTER_ADDR} \
-        --data-parallel-rpc-port 13345 \
-        --data-parallel-start-rank ${DECODE_DP_START_RANK} \
-        --headless \
-        --enable-expert-parallel \
-        --port 20005 \
-        --gpu_memory_utilization 0.8 \
-        --kv-cache-dtype fp8 \
-        --block-size 1 \
-        --no-enable-prefix-caching \
-        --enforce-eager \
-        --all2all-backend mori \
-        --trust-remote-code \
-        --kv-transfer-config '{"kv_connector":"MoRIIOConnector","kv_role":"kv_consumer","kv_port":"9711","kv_connector_extra_config":{"proxy_ip":"'"${MASTER_ADDR}"'","proxy_port":"10001","proxy_ping_port":"36367","http_port":"20005","local_ping_port":"61555","handshake_port":"8405","notify_port":"61005"}}' \
-        2>&1 | tee /run_logs/${SLURM_JOB_ID}/decode_NODE${NODE_RANK}.log > /dev/null & 
-        #--compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY", "custom_ops": ["+quant_fp8"]}' \
-
-    decode_child_pid=$!
-    
-    echo "Waiting for proxy server to be up..."
-    python $NIXL_COOKBOOK_PATH/socket_barrier.py \
-        --node-ips ${MASTER_ADDR} \
-        --node-ports $PROXY_PORT
-
-    echo "Waiting untill proxy server closes..."
-    python $NIXL_COOKBOOK_PATH/socket_wait.py \
-        --remote-ip ${MASTER_ADDR} \
-        --remote-port $PROXY_PORT
-
-    echo "Killing the decode child server"
-    kill $decode_child_pid
+    launch_vllm_worker "${DECODE_DP_SIZE}" "${DECODE_MASTER_ADDR}" "kv_consumer" "decode" "child" "${DECODE_DP_START_RANK}"
+    wait_for_proxy_and_cleanup $WORKER_PID "decode child"
 
 fi
 
