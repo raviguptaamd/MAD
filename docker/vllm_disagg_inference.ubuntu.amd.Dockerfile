@@ -56,7 +56,7 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/ucx/lib/
 ENV PATH=$PATH:/usr/local/ucx/bin/
 
 RUN set -e && apt update && \
-    apt install -y libaio-dev liburing-dev etcd etcd-server etcd-client libcpprest-dev libgrpc-dev libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc wget && \
+    apt install -y libaio-dev liburing-dev libcpprest-dev libgrpc-dev libgrpc++-dev libprotobuf-dev protobuf-compiler-grpc wget && \
     wget https://github.com/google/googletest/archive/refs/tags/v1.14.0.tar.gz && \
     tar -xzf v1.14.0.tar.gz && \
     cd googletest-1.14.0 && \
@@ -66,23 +66,6 @@ RUN set -e && apt update && \
     make -j && \
     make install && \
     cd ../..
-
-# Expected etcd at /usr/local/bin/etcd//etcd
-RUN wget https://github.com/etcd-io/etcd/releases/download/v3.6.0-rc.5/etcd-v3.6.0-rc.5-linux-amd64.tar.gz -O /tmp/etcd.tar.gz && \
-    mkdir -p /usr/local/bin/etcd && \
-    tar -xvf /tmp/etcd.tar.gz -C /usr/local/bin/etcd --strip-components=1 && \
-    rm /tmp/etcd.tar.gz
-ENV PATH=$PATH:/usr/local/bin/etcd/
-
-RUN set -e && echo "Compiling etcd-cpp API" && \
-    git clone https://github.com/etcd-cpp-apiv3/etcd-cpp-apiv3.git && \
-    cd etcd-cpp-apiv3 && \
-    mkdir build && cd build && \
-    cmake -DCMAKE_FIND_ROOT_PATH=/usr/grpc .. && \
-    make -j && \
-    make install && \
-    cd ../.. && \
-    echo "etcd-cpp installation completed."
 
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib/
 ENV PATH=/root/.local/bin:${_UCX_INSTALL_DIR}/bin:$PATH
