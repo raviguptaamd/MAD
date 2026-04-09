@@ -24,12 +24,20 @@ VALID_MODELS=( \
     "Llama-3.1-405B-Instruct-FP8-KV" \
     "amd-Llama-3.3-70B-Instruct-FP8-KV" \
     "DeepSeek-V3" \
+    "DeepSeek-V3-5layer" \
     "gpt-oss-120b" \
     "DeepSeek-R1" \
 )
 
 # Models allowed for vllm_disagg_mori_ep.sh when RUN_MORI=1
 MORI_EP_VALID_MODELS=( \
+    "DeepSeek-R1" \
+)
+
+# Models allowed for vllm_disagg_server_deepep.sh when RUN_DEEPEP=1
+DEEPEP_VALID_MODELS=( \
+    "DeepSeek-V3" \
+    "DeepSeek-V3-5layer" \
     "DeepSeek-R1" \
 )
 
@@ -67,7 +75,26 @@ model_allows_mori_ep() {
   return 1
 }
 
-if [[ "${RUN_MORI:-0}" == "1" ]]; then
+model_allows_deepep() {
+  local m="$1"
+  for x in "${DEEPEP_VALID_MODELS[@]}"; do
+    [[ "$m" == "$x" ]] && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Run-mode selection: exactly one of RUN_MORI / RUN_DEEPEP may be "1".
+# ---------------------------------------------------------------------------
+_run_mori="${RUN_MORI:-0}"
+_run_deepep="${RUN_DEEPEP:-0}"
+
+if [[ "$_run_mori" == "1" && "$_run_deepep" == "1" ]]; then
+  echo "Error: Both RUN_MORI and RUN_DEEPEP are set to 1. Set only one." >&2
+  exit 1
+fi
+
+if [[ "$_run_mori" == "1" ]]; then
   if model_allows_mori_ep "$MODEL_NAME"; then
     RUN_FILE="vllm_disagg_mori_ep.sh"
     echo "RUN_MORI=1: using $RUN_FILE for model '$MODEL_NAME'"
@@ -79,9 +106,21 @@ if [[ "${RUN_MORI:-0}" == "1" ]]; then
     done
     exit 1
   fi
+elif [[ "$_run_deepep" == "1" ]]; then
+  if model_allows_deepep "$MODEL_NAME"; then
+    RUN_FILE="vllm_disagg_server_deepep.sh"
+    echo "RUN_DEEPEP=1: using $RUN_FILE for model '$MODEL_NAME'"
+  else
+    echo "Error: RUN_DEEPEP=1 but MODEL_NAME '$MODEL_NAME' is not in DEEPEP_VALID_MODELS"
+    printf "DeepEP allowed models:\n"
+    for m in "${DEEPEP_VALID_MODELS[@]}"; do
+      printf "  - %s\n" "$m"
+    done
+    exit 1
+  fi
 else
   RUN_FILE="vllm_disagg_server.sh"
-  echo "RUN_MORI not set to 1: using $RUN_FILE"
+  echo "RUN_MORI/RUN_DEEPEP not set: using $RUN_FILE"
 fi
 
 if [[ -z "${DOCKER_IMAGE_NAME:-}" ]]; then
@@ -178,6 +217,16 @@ echo ""
 NUM_NODES=$((xP + yD + 1))
 echo "Calculated NUM_NODES: $NUM_NODES (xP=$xP + yD=$yD + 1)"
 
+# DeepEP configuration (only exported when RUN_DEEPEP=1)
+if [[ "$_run_deepep" == "1" ]]; then
+    export PREFILL_DEEPEP_BACKEND="${PREFILL_DEEPEP_BACKEND:-deepep_high_throughput}"
+    export DECODE_DEEPEP_BACKEND="${DECODE_DEEPEP_BACKEND:-deepep_low_latency}"
+    export ENABLE_DBO="${ENABLE_DBO:-false}"
+    export DBO_COMM_SMS="${DBO_COMM_SMS:-}"
+    export ENABLE_PROFILING="${ENABLE_PROFILING:-false}"
+    echo "DeepEP config: PREFILL_BACKEND=$PREFILL_DEEPEP_BACKEND DECODE_BACKEND=$DECODE_DEEPEP_BACKEND DBO=$ENABLE_DBO"
+fi
+
 # ------------------------
 # Extract first NUM_NODES from SLURM allocation and update SLURM variables
 # ------------------------
@@ -245,7 +294,7 @@ echo "Selected nodes for execution:"
 echo "$SELECTED_NODES"
 echo ""
 
-# MAke sure xP*8 and yD*8 are multiple of by 129280 for Deepseek V3
+# Make sure xP*8 and yD*8 are multiples of 129280 for DeepSeek V3
 
 # ------------------------
 # SLURM Environment Variables
@@ -286,7 +335,7 @@ echo "MASTER_NODE is ${MASTER_NODE}"
 echo "MASTER_ADDR is ${MASTER_ADDR}"
 echo "MASTER_PORT is ${MASTER_PORT}"
 echo "NNODES is ${NNODES}"
-echo "REPO Directory is ${MOONCAKE_REPO_DIR}"
+echo "REPO Directory is ${NIXL_REPO_DIR}"
 
 if [ ! -d "$LOG_PATH" ]; then
     mkdir -p "$LOG_PATH"
@@ -317,6 +366,26 @@ SELECTED_NODELIST_SRUN=$(echo "$SELECTED_NODES" | paste -sd,)
 srun --nodelist="$SELECTED_NODELIST_SRUN" bash -c '
 echo "Rank $SLURM_PROCID on $(hostname)";
 docker ps -q | xargs --no-run-if-empty docker stop;
+fuser -k 15000/tcp 2>/dev/null || true;
+sleep 2;
+docker pull $DOCKER_IMAGE_NAME 2>/dev/null || true;
+
+# --- Build host RDMA library mounts ---
+# Mount the host MLNX OFED userspace libraries into the container so that
+# libmlx5 / libibverbs always match the host kernel module, preventing
+# mlx5dv_devx_alloc_uar failures from ABI mismatches.
+_RDMA_MOUNTS=""
+_LIBDIR=/usr/lib/x86_64-linux-gnu
+for _lib in libmlx5.so libmlx5.so.1 libibverbs.so libibverbs.so.1 librdmacm.so librdmacm.so.1; do
+    [ -e "$_LIBDIR/$_lib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/$_lib:$_LIBDIR/$_lib:ro"
+done
+for _vlib in $_LIBDIR/libmlx5.so.1.* $_LIBDIR/libibverbs.so.1.* $_LIBDIR/librdmacm.so.1.*; do
+    [ -e "$_vlib" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_vlib:$_vlib:ro"
+done
+[ -d "$_LIBDIR/libibverbs" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/libibverbs:$_LIBDIR/libibverbs:ro"
+[ -d /etc/libibverbs.d ]     && _RDMA_MOUNTS="$_RDMA_MOUNTS -v /etc/libibverbs.d:/etc/libibverbs.d:ro"
+echo "[host-rdma] mounts: $_RDMA_MOUNTS"
+
 docker run --rm \
     --device /dev/dri \
     --device /dev/kfd \
@@ -335,6 +404,7 @@ docker run --rm \
     --ulimit nofile=131072:131072 \
     -v ${LOG_PATH}:/run_logs \
     -v $NIXL_REPO_DIR:$NIXL_COOKBOOK_PATH \
+    $_RDMA_MOUNTS \
     --entrypoint /bin/bash \
     -e SLURM_JOB_ID=$SLURM_JOB_ID \
     -e SLURM_JOB_NODELIST=$SLURM_JOB_NODELIST \
@@ -353,6 +423,11 @@ docker run --rm \
     -e PROXY_TYPE=${PROXY_TYPE:-vllm_router} \
     -e ROUTER_PORT=${ROUTER_PORT:-2584} \
     -e BENCHMARK_PORT=${BENCHMARK_PORT:-2584} \
+    -e PREFILL_DEEPEP_BACKEND=${PREFILL_DEEPEP_BACKEND:-} \
+    -e DECODE_DEEPEP_BACKEND=${DECODE_DEEPEP_BACKEND:-} \
+    -e ENABLE_DBO=${ENABLE_DBO:-} \
+    -e DBO_COMM_SMS=${DBO_COMM_SMS:-} \
+    -e ENABLE_PROFILING=${ENABLE_PROFILING:-} \
     --name $DOCKER_CONT_NAME \
     $DOCKER_IMAGE_NAME -c "
         mkdir -p /run_logs/${SLURM_JOB_ID}

@@ -8,11 +8,11 @@ Dense Models
 
 This repository contains scripts and documentation to launch PD Disaggregation using the Nixl framework for above models. You will find setup instructions, node assignment details and benchmarking commands.
 
-## 📝 Prerequisites
+## Prerequisites
 
-- A Slurm cluster with required Nodes -> xP + yD + 1 (minimum size 3: xP=1 and xD=1)
+- A Slurm cluster with required Nodes -> xP + yD + 1 (minimum size 3: xP=1 and yD=1)
 - Docker container with VLLM, Nixl and NIC drivers built-in. Refer to Building the Docker image section below.
-- Access to a shared filesystem for log collection( cluster specific)
+- Access to a shared filesystem for log collection (cluster specific)
 
 
 ## Building the Docker image
@@ -25,24 +25,76 @@ docker build  -t vllm_dissag_pd_image -f vllm_dissag_inference.ubuntu.amd.Docker
 ## Scripts and Benchmarking
 Run instructions - scripts/vllm_dissag/README.MD
 
-Few files of significance:
+Key files:
 
-scripts/vllm_dissag/run_xPyD_models.slurm - slurm script to launch docker containers on all nodes using sbatch or salloc  
-scripts/vllm_dissag/vllm_disagg_server.sh - Script that runs inside each docker to start required proxy, prefill and decode services
-scripts/vllm_dissag/benchmark_xPyD.sh - Benchmark script to run VLLM benchmarking tool for performance measurement
+| File | Description |
+|------|-------------|
+| `run_xPyD_models.slurm` | Slurm script to launch docker containers on all nodes using sbatch |
+| `vllm_disagg_server.sh` | Default PD server script (NixlConnector, no expert parallel) |
+| `vllm_disagg_mori_ep.sh` | MoRI EP server script (MoRIIOConnector, expert parallel) |
+| `vllm_disagg_server_deepep.sh` | DeepEP server script (NixlConnector, DeepEP all2all backends) |
+| `benchmark_xPyD.sh` | Benchmark script using vLLM benchmarking tool |
 
-## Sbatch run command (one-liner)
+## Run Modes
+
+The `run_xPyD_models.slurm` script supports three run modes, controlled by the `RUN_MORI` and `RUN_DEEPEP` environment variables. At most one of these may be set to `1`.
+
+| Mode | Env Variable | Server Script | KV Connector | Models |
+|------|-------------|---------------|--------------|--------|
+| Default (NixlConnector) | Neither set | `vllm_disagg_server.sh` | NixlConnector | All VALID_MODELS |
+| MoRI EP | `RUN_MORI=1` | `vllm_disagg_mori_ep.sh` | MoRIIOConnector | DeepSeek-R1 |
+| DeepEP | `RUN_DEEPEP=1` | `vllm_disagg_server_deepep.sh` | NixlConnector | DeepSeek-V3, DeepSeek-V3-5layer, DeepSeek-R1 |
+
+Setting both `RUN_MORI=1` and `RUN_DEEPEP=1` will exit with an error.
+
+## Sbatch Run Commands
+
+### Default mode (NixlConnector)
 ```bash
-
-# Clone the repo
 git clone https://github.com/ROCm/MAD.git
-cd scripts/vllm_dissag
+cd MAD/scripts/vllm_dissag
 
-# Sbatch run command [run from the above folder]
-export DOCKER_IMAGE_NAME=<DOCKER IMAGE NAME>
-export xP=<num_prefill_nodes>; export yD=<num_decode_nodes>; export MODEL_NAME=Llama-3.1-8B-Instruct; sbatch -N <num_nodes> -n <num_nodes> --nodelist=<Nodes> run_xPyD_models.slurm
+export DOCKER_IMAGE_NAME=<DOCKER_IMAGE_NAME>
+export xP=1; export yD=1; export MODEL_NAME=DeepSeek-V3
+sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
+```
 
-# num_nodes = xP + xD + 1
+### MoRI EP mode
+```bash
+export DOCKER_IMAGE_NAME=<DOCKER_IMAGE_NAME>
+export RUN_MORI=1
+export xP=1; export yD=1; export MODEL_NAME=DeepSeek-R1
+sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
+```
+
+### DeepEP mode
+```bash
+export DOCKER_IMAGE_NAME=<DOCKER_IMAGE_NAME>
+export RUN_DEEPEP=1
+export xP=1; export yD=1; export MODEL_NAME=DeepSeek-V3
+sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
+```
+
+### DeepEP environment variables (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PREFILL_DEEPEP_BACKEND` | `deepep_high_throughput` | All2all backend for prefill nodes |
+| `DECODE_DEEPEP_BACKEND` | `deepep_low_latency` | All2all backend for decode nodes |
+| `ENABLE_DBO` | `false` | Enable Dynamic Batching Optimization |
+| `DBO_COMM_SMS` | (vLLM default) | DBO communication SMs override |
+| `ENABLE_PROFILING` | `false` | Enable profiling |
+
+`num_nodes = xP + yD + 1` (1 dedicated proxy node + xP prefill nodes + yD decode nodes)
+
+## Node Topology (all modes)
+
+```
+Node 0          -> Proxy (dedicated, no vLLM server)
+Node 1          -> Prefill MASTER
+Nodes 2..xP     -> Prefill CHILD (if xP > 1)
+Node xP+1       -> Decode MASTER
+Nodes xP+2..end -> Decode CHILD (if yD > 1)
 ```
 
 ## Proxy Server Options
@@ -60,7 +112,7 @@ export PROXY_TYPE=toy_proxy
 # Then run sbatch/srun as usual
 ```
 
-## Benchmark parser ( for CONCURRENCY logs) to tabulate different data
+## Benchmark parser (for CONCURRENCY logs) to tabulate different data
 
 ```bash
 python3 benchmark_parser.py <log_path/benchmark_XXX_CONCURRENCY.log
