@@ -401,7 +401,7 @@ docker run --rm \
     -v /mnt/m2m_nobackup:/mnt/m2m_nobackup \
     -v $HOME/.ssh:/root/.ssh \
     --shm-size 64G \
-    --ulimit nofile=131072:131072 \
+    --ulimit nofile=524288:524288 \
     -v ${LOG_PATH}:/run_logs \
     -v $NIXL_REPO_DIR:$NIXL_COOKBOOK_PATH \
     $_RDMA_MOUNTS \
