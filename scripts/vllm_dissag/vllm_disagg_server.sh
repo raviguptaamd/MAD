@@ -43,13 +43,17 @@ SERVER_PORT=2584
 PROXY_PORT=$ROUTER_PORT
 
 if [[ -z "$UCX_NET_DEVICES" ]]; then
-    echo "Error: UCX_NET_DEVICES is empty" >&2
-    exit 1
+    UCX_NET_DEVICES=$(ibstat 2>/dev/null | awk '
+        /^CA /{gsub(/\047/,"",$2); ca=$2}
+        /Rate:/{if($2+0 >= 200) devs=devs (devs?",":"") ca":1"}
+        END{print devs}')
+    export UCX_NET_DEVICES="${UCX_NET_DEVICES:-mlx5_0:1}"
+    echo "Auto-detected UCX_NET_DEVICES=${UCX_NET_DEVICES}"
 fi
 
 if [[ -z "$NCCL_SOCKET_IFNAME" ]]; then
-    echo "Error: NCCL_SOCKET_IFNAME is empty" >&2
-    exit 1
+    export NCCL_SOCKET_IFNAME="eth0"
+    echo "Defaulting NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME}"
 fi
 
 # =============================================================================
