@@ -168,6 +168,11 @@ print_node_info() {
 # Container Synchronization
 # =============================================================================
 
+for _pid in $(ss -tlnp sport = 2222 2>/dev/null | grep -oP "pid=\K\d+"); do
+    kill -9 "$_pid" 2>/dev/null
+done
+sleep 2
+
 echo "Waiting at the container creation barrier on $host_name"
 python $NIXL_COOKBOOK_PATH/socket_barrier.py \
     --local-ip ${host_ip} \
