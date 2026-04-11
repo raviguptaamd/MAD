@@ -239,10 +239,10 @@ if [ "$NODE_RANK" -eq 0 ]; then
         PREFILL_URLS=""
         DECODE_URLS=""
         for ip in ${PREFILL_ARGS}; do
-            PREFILL_URLS+="--prefill-url http://${ip}:${SERVER_PORT}/v1 "
+            PREFILL_URLS+="--prefill http://${ip}:${SERVER_PORT} "
         done
         for ip in ${DECODE_ARGS}; do
-            DECODE_URLS+="--decode-url http://${ip}:${SERVER_PORT}/v1 "
+            DECODE_URLS+="--decode http://${ip}:${SERVER_PORT} "
         done
 
         UCX_TLS=tcp,self,shm VLLM_USE_V1=1 \
