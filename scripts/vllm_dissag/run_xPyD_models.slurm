@@ -327,6 +327,9 @@ echo "Selected node IPs: ${IPS[*]}" | sed 's/ /,/g'
 
 NIXL_COOKBOOK_PATH="/opt/nixl-vllm-cookbook"
 BENCHMARK_FILE="${BENCHMARK_FILE:-$NIXL_COOKBOOK_PATH/dissag_blog_p1/models_blog/run_xPyD_models.slurm}"
+BENCHMARK_ITR="${BENCHMARK_ITR:-1}"
+BENCHMARK_CON="${BENCHMARK_CON:-}"
+BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS:-}"
 timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
 
 NNODES=$NUM_NODES
@@ -356,6 +359,9 @@ export yD=$yD
 export MODEL_NAME=$MODEL_NAME
 export USER_NAME=$USER_NAME
 export IPADDRS="$(echo "${IPS[*]}" | sed 's/ /,/g')"
+export BENCHMARK_ITR=$BENCHMARK_ITR
+export BENCHMARK_CON="${BENCHMARK_CON}"
+export BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS}"
 
 export DOCKER_CONT_NAME="container_${MODEL_NAME}_${SLURM_JOB_ID}"
 export RUN_FILE_FULL="$NIXL_COOKBOOK_PATH/${RUN_FILE}"
@@ -419,6 +425,9 @@ docker run --rm \
     -e USER_NAME=$USER_NAME \
     -e MODEL_NAME=$MODEL_NAME \
     -e BENCHMARK_FILE=$BENCHMARK_FILE \
+    -e BENCHMARK_ITR=$BENCHMARK_ITR \
+    -e BENCHMARK_CON="${BENCHMARK_CON}" \
+    -e BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS}" \
     -e IPADDRS=$IPADDRS \
     -e PROXY_TYPE=${PROXY_TYPE:-vllm_router} \
     -e ROUTER_PORT=${ROUTER_PORT:-2584} \
