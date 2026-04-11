@@ -216,7 +216,6 @@ if [ "$NODE_RANK" -eq 0 ]; then
     vllm serve \${MODEL_PATH} \
         --port $SERVER_PORT \
         --trust-remote-code \
-        --disable-log-requests \
         --kv-transfer-config '{\"kv_connector\": \"NixlConnector\", \"engine_id\": \"pd-run\", \"kv_role\": \"kv_producer\", \"kv_parallel_size\": 8, \"kv_rank\": 0, \"kv_buffer_size\": 5000000000, \"kv_buffer_device\": \"cuda\", \"kv_ip\": \"'\"\${host_ip}\"'\", \"kv_port\": 14600}'"
 
     if [[ -n "$PREFILL_MODEL_CONFIG" ]]; then
@@ -320,7 +319,6 @@ elif [ "$NODE_RANK" -gt 0 ] && [ "$NODE_RANK" -lt "$xP" ]; then
     vllm serve \${MODEL_PATH} \
         --port $SERVER_PORT \
         --trust-remote-code \
-        --disable-log-requests \
         --kv-transfer-config '{\"kv_connector\": \"NixlConnector\", \"engine_id\": \"pd-run\", \"kv_role\": \"kv_producer\", \"kv_parallel_size\": 8, \"kv_rank\": 0, \"kv_buffer_size\": 5000000000, \"kv_buffer_device\": \"cuda\", \"kv_ip\": \"'\"\${host_ip}\"'\", \"kv_port\": 14600}'"
 
     if [[ -n "$PREFILL_MODEL_CONFIG" ]]; then
@@ -374,7 +372,6 @@ else
     vllm serve \${MODEL_PATH} \
         --port $SERVER_PORT \
         --trust-remote-code \
-        --disable-log-requests \
         --kv-transfer-config '{\"kv_connector\": \"NixlConnector\", \"engine_id\": \"llama8b-run\", \"kv_role\": \"kv_consumer\", \"kv_parallel_size\": 8, \"kv_rank\": 0, \"kv_buffer_size\": 5000000000, \"kv_buffer_device\": \"cuda\", \"kv_ip\": \"'\"\${host_ip}\"'\", \"kv_port\": 14600}'"
 
     if [[ -n "$DECODE_MODEL_CONFIG" ]]; then
