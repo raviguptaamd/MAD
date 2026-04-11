@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=vllm-pd    # Specify a custom string for your slurm batch job
-#SBATCH -N 3           # Request N+1 nodes
-#SBATCH -n 3          # Request N+1 total tasks
+#SBATCH -N 2           # Request xP + yD nodes (proxy co-located on prefill master)
+#SBATCH -n 2          # Request xP + yD total tasks
 #SBATCH --ntasks-per-node=1
 #SBATCH --spread-job
 #SBATCH --gres=gpu:8      # Request 8 GPUs and 8 NICs (use --gres if specific GPU resources are needed)
@@ -214,8 +214,8 @@ echo ""
 
 
 # Calculate NUM_NODES based on xP and yD
-NUM_NODES=$((xP + yD + 1))
-echo "Calculated NUM_NODES: $NUM_NODES (xP=$xP + yD=$yD + 1)"
+NUM_NODES=$((xP + yD))
+echo "Calculated NUM_NODES: $NUM_NODES (xP=$xP + yD=$yD, proxy co-located on prefill master)"
 
 # DeepEP configuration (only exported when RUN_DEEPEP=1)
 if [[ "$_run_deepep" == "1" ]]; then
@@ -430,8 +430,8 @@ docker run --rm \
     -e BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS}" \
     -e IPADDRS=$IPADDRS \
     -e PROXY_TYPE=${PROXY_TYPE:-vllm_router} \
-    -e ROUTER_PORT=${ROUTER_PORT:-2584} \
-    -e BENCHMARK_PORT=${BENCHMARK_PORT:-2584} \
+    -e ROUTER_PORT=${ROUTER_PORT:-8001} \
+    -e BENCHMARK_PORT=${BENCHMARK_PORT:-8001} \
     -e PREFILL_DEEPEP_BACKEND=${PREFILL_DEEPEP_BACKEND:-} \
     -e DECODE_DEEPEP_BACKEND=${DECODE_DEEPEP_BACKEND:-} \
     -e ENABLE_DBO=${ENABLE_DBO:-} \

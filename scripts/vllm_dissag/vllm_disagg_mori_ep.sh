@@ -44,10 +44,10 @@ NOTIFY_PORT=61005
 PREFILL_DP_SIZE=$((xP * 8))
 DECODE_DP_SIZE=$((yD * 8))
 DP_PARALLEL_SIZE_LOCAL=8
-PREFILL_DP_START_RANK=$(( (NODE_RANK - 1) * 8 ))
-PREFILL_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' '{print $2}')
-DECODE_DP_START_RANK=$(( (NODE_RANK - xP - 1) * 8 ))
-DECODE_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' -v pos="$xP" '{print $(pos+2)}')
+PREFILL_DP_START_RANK=$(( NODE_RANK * 8 ))
+PREFILL_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' '{print $1}')
+DECODE_DP_START_RANK=$(( (NODE_RANK - xP) * 8 ))
+DECODE_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' -v pos="$xP" '{print $(pos+1)}')
 
 echo "-----------------------------Printing node specific details ----------------------"
 echo "IPADDRS = ${IPADDRS}"
@@ -181,17 +181,28 @@ python $NIXL_COOKBOOK_PATH/socket_barrier.py \
 # =============================================================================
 
 if [ "$NODE_RANK" -eq 0 ]; then
-    print_node_info "Proxy node"
+    # =================================================================
+    # Rank 0: Prefill master + Proxy (co-located)
+    # =================================================================
+    print_node_info "Prefill master + Proxy node (co-located)"
+    echo "PREFILL_DP_SIZE=${PREFILL_DP_SIZE}"
+    echo "PREFILL_DP_START_RANK=${PREFILL_DP_START_RANK}"
+    echo "PREFILL_MASTER_ADDR=${PREFILL_MASTER_ADDR}"
+    echo "DP_PARALLEL_SIZE_LOCAL=${DP_PARALLEL_SIZE_LOCAL}"
+    echo "vLLM serve port: ${SERVE_PORT}  Proxy port: ${PROXY_PORT}"
 
-    echo "Proxy server is waiting for prefill & decode nodes to be ready ... "
+    launch_vllm_worker "${PREFILL_DP_SIZE}" "${PREFILL_MASTER_ADDR}" "kv_producer" "prefill" "master"
+    local_worker_pid=$WORKER_PID
+
+    echo "Waiting for prefill & decode servers to be ready..."
     sleep 20
 
     TIMEOUT_SECONDS=4000
     SLEEP_SECONDS=10
     SEARCH_SIGNAL="Application startup complete."
 
-    PREFILL_LOG=/run_logs/${SLURM_JOB_ID}/prefill_NODE1.log
-    DECODE_LOG=/run_logs/${SLURM_JOB_ID}/decode_NODE$((xP + 1)).log
+    PREFILL_LOG=/run_logs/${SLURM_JOB_ID}/prefill_NODE0.log
+    DECODE_LOG=/run_logs/${SLURM_JOB_ID}/decode_NODE${xP}.log
 
     wait_log_signal_or_fail() {
         local LOG_FILE="$1"
@@ -233,18 +244,13 @@ if [ "$NODE_RANK" -eq 0 ]; then
 
     echo "Killing the proxy server.."
     kill $proxy_pid
+    echo "Killing the prefill master server.."
+    kill $local_worker_pid 2>/dev/null || true
 
-elif [ "$NODE_RANK" -eq 1 ]; then
-    print_node_info "Prefill master node"
-    echo "PREFILL_DP_SIZE=${PREFILL_DP_SIZE}"
-    echo "PREFILL_DP_START_RANK=${PREFILL_DP_START_RANK}"
-    echo "PREFILL_MASTER_ADDR=${PREFILL_MASTER_ADDR}"
-    echo "DP_PARALLEL_SIZE_LOCAL=${DP_PARALLEL_SIZE_LOCAL}"
-
-    launch_vllm_worker "${PREFILL_DP_SIZE}" "${PREFILL_MASTER_ADDR}" "kv_producer" "prefill" "master"
-    wait_for_proxy_and_cleanup $WORKER_PID "prefill master"
-
-elif [ "$NODE_RANK" -gt 1 ] && [ "$NODE_RANK" -le "$xP" ]; then
+elif [ "$NODE_RANK" -gt 0 ] && [ "$NODE_RANK" -lt "$xP" ]; then
+    # =================================================================
+    # Prefill child (only active when xP > 1)
+    # =================================================================
     print_node_info "Prefill child node"
     echo "PREFILL_DP_SIZE=${PREFILL_DP_SIZE}"
     echo "PREFILL_DP_START_RANK=${PREFILL_DP_START_RANK}"
@@ -254,7 +260,10 @@ elif [ "$NODE_RANK" -gt 1 ] && [ "$NODE_RANK" -le "$xP" ]; then
     launch_vllm_worker "${PREFILL_DP_SIZE}" "${PREFILL_MASTER_ADDR}" "kv_producer" "prefill" "child" "${PREFILL_DP_START_RANK}"
     wait_for_proxy_and_cleanup $WORKER_PID "prefill child"
 
-elif [ "$NODE_RANK" -eq $((xP + 1)) ]; then
+elif [ "$NODE_RANK" -eq "$xP" ]; then
+    # =================================================================
+    # Decode master
+    # =================================================================
     print_node_info "Decode master node"
     echo "DECODE_DP_SIZE=${DECODE_DP_SIZE}"
     echo "DECODE_DP_START_RANK=${DECODE_DP_START_RANK}"
@@ -265,6 +274,9 @@ elif [ "$NODE_RANK" -eq $((xP + 1)) ]; then
     wait_for_proxy_and_cleanup $WORKER_PID "decode master"
 
 else
+    # =================================================================
+    # Decode child (rank > xP)
+    # =================================================================
     print_node_info "Decode child node"
     echo "DECODE_DP_SIZE=${DECODE_DP_SIZE}"
     echo "DECODE_DP_START_RANK=${DECODE_DP_START_RANK}"

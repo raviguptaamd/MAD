@@ -17,7 +17,7 @@ IPADDRS="${IPADDRS:-localhost}"
 
 # Proxy configuration: "vllm_router" (default) or "toy_proxy"
 PROXY_TYPE="${PROXY_TYPE:-vllm_router}"
-ROUTER_PORT="${ROUTER_PORT:-2584}"
+ROUTER_PORT="${ROUTER_PORT:-8001}"
 
 if [[ "$PROXY_TYPE" != "vllm_router" && "$PROXY_TYPE" != "toy_proxy" ]]; then
     echo "Error: Invalid PROXY_TYPE='$PROXY_TYPE'. Must be 'vllm_router' or 'toy_proxy'." >&2
@@ -40,11 +40,7 @@ host_ip=$(hostname -I | awk '{print $1}')
 host_name=$(hostname)
 SERVER_PORT=2584
 
-if [ "$PROXY_TYPE" == "vllm_router" ]; then
-    PROXY_PORT=$ROUTER_PORT
-else
-    PROXY_PORT=$SERVER_PORT
-fi
+PROXY_PORT=$ROUTER_PORT
 
 if [[ -z "$UCX_NET_DEVICES" ]]; then
     echo "Error: UCX_NET_DEVICES is empty" >&2
@@ -151,14 +147,14 @@ DECODE_ARGS=""
 PREFILL_PORTS=""
 DECODE_PORTS=""
 
-# Loop through for `--prefill` (IPs from index 0 to N-1)
-for ((i=1; i<=$xP && i<${#IP_ARRAY[@]}; i++)); do
+# Prefill IPs: index 0 .. xP-1 (rank 0 is prefill master + proxy)
+for ((i=0; i<xP && i<${#IP_ARRAY[@]}; i++)); do
     PREFILL_ARGS+="${IP_ARRAY[$i]} "
     PREFILL_PORTS+="$SERVER_PORT "
 done
 
-# Loop through for `--decode` (IPs from N onward)
-for ((i=xP+1; i<${#IP_ARRAY[@]}; i++)); do
+# Decode IPs: index xP .. end
+for ((i=xP; i<${#IP_ARRAY[@]}; i++)); do
     DECODE_ARGS+="${IP_ARRAY[$i]} "
     DECODE_PORTS+="$SERVER_PORT "
 done
@@ -168,6 +164,9 @@ done
 # =============================================================================
 
 if [ "$NODE_RANK" -eq 0 ]; then
+    # =================================================================
+    # Rank 0: Prefill master + Proxy (co-located)
+    # =================================================================
     echo "NODE INFO ======================================="
     echo "================================================"
     echo "Node List : ${SLURM_JOB_NODELIST}"
@@ -177,25 +176,58 @@ if [ "$NODE_RANK" -eq 0 ]; then
 
     echo "CLUSTER INFO ===================================="
     echo "================================================"
-    echo "${host_name}:${host_ip} is Proxy Node"
-    echo "${PREFILL_ARGS} are Proxy's Prefill"
-    echo "${DECODE_ARGS} are Proxy's Decode"
+    echo "${host_name}:${host_ip} is Prefill Master + Proxy Node (co-located)"
+    echo "${PREFILL_ARGS} are Prefill nodes"
+    echo "${DECODE_ARGS} are Decode nodes"
+    echo "vLLM serve port: ${SERVER_PORT}  Proxy port: ${PROXY_PORT}"
     echo "================================================"
-    
 
-    # =============================================================================
-    # Wait for PD servers
-    # =============================================================================
-    PD_IPADDRS="${IPADDRS#*,}"
+    echo "${host_name}:${host_ip} is Prefill Node (Model: ${MODEL_NAME:-'default'})"
+    echo "Using prefill config: $PREFILL_MODEL_CONFIG"
+
+    PREFILL_CMD="LD_LIBRARY_PATH=/app/install/nixl/lib/x86_64-linux-gnu/:/app/install/ucx/lib:/opt/rocm/lib:\$LD_LIBRARY_PATH \
+    ${PREFILL_MODEL_ENVS} \
+    VLLM_USE_V1=1 \
+    VLLM_SERVER_DEV_MODE=0 \
+    VLLM_NIXL_SIDE_CHANNEL_HOST=\${host_ip} \
+    VLLM_NIXL_SIDE_CHANNEL_PORT=5557 \
+    UCX_TLS=rc,sm,self,rocm_copy,rocm_ipc,tcp \
+    UCX_NET_DEVICES=mlx5_0:1 \
+    UCX_SOCKADDR_TLS_PRIORITY=rdmacm,tcp \
+    UCX_SOCKADDR_CM_ENABLE=y \
+    UCX_RDMA_CM_ENABLED=y \
+    UCX_MEMTYPE_CACHE=y \
+    UCX_RNDV_SCHEME=get_zcopy \
+    UCX_RNDV_THRESH=4k \
+    UCX_ROCM_IPC_MIN_ZCOPY=0 \
+    HSA_ENABLE_SDMA=1 \
+    UCX_LOG_LEVEL=info \
+    NIXL_LOG_LEVEL=DEBUG \
+    HSA_ENABLE_SDMA=1 \
+    vllm serve \${MODEL_PATH} \
+        --port $SERVER_PORT \
+        --trust-remote-code \
+        --disable-log-requests \
+        --kv-transfer-config '{\"kv_connector\": \"NixlConnector\", \"engine_id\": \"pd-run\", \"kv_role\": \"kv_producer\", \"kv_parallel_size\": 8, \"kv_rank\": 0, \"kv_buffer_size\": 5000000000, \"kv_buffer_device\": \"cuda\", \"kv_ip\": \"'\"\${host_ip}\"'\", \"kv_port\": 14600}'"
+
+    if [[ -n "$PREFILL_MODEL_CONFIG" ]]; then
+        PREFILL_CMD="$PREFILL_CMD $PREFILL_MODEL_CONFIG"
+    fi
+
+    eval "$PREFILL_CMD" \
+        2>&1 | tee /run_logs/${SLURM_JOB_ID}/prefill_NODE${NODE_RANK}.log >/dev/null &
+
+    prefill_pid=$!
+
     echo "Waiting for all prefill and decode servers to be up . . ."
     python $NIXL_COOKBOOK_PATH/socket_barrier.py \
-        --node-ips ${PD_IPADDRS} \
+        --node-ips ${IPADDRS} \
         --node-ports $SERVER_PORT
 
     if [ "$PROXY_TYPE" == "vllm_router" ]; then
-        echo "Starting vLLM Router (Production Proxy)..."
+        echo "Starting vLLM Router (Production Proxy) on port ${PROXY_PORT}..."
         [ -f /root/.cargo/env ] && source /root/.cargo/env
-        
+
         PREFILL_URLS=""
         DECODE_URLS=""
         for ip in ${PREFILL_ARGS}; do
@@ -204,7 +236,7 @@ if [ "$NODE_RANK" -eq 0 ]; then
         for ip in ${DECODE_ARGS}; do
             DECODE_URLS+="--decode-url http://${ip}:${SERVER_PORT}/v1 "
         done
-        
+
         UCX_TLS=tcp,self,shm VLLM_USE_V1=1 \
         vllm-router \
             --host 0.0.0.0 \
@@ -220,22 +252,20 @@ if [ "$NODE_RANK" -eq 0 ]; then
             --prometheus-port 29000 \
             2>&1 | tee /run_logs/${SLURM_JOB_ID}/vllm_router_NODE${NODE_RANK}.log >/dev/null &
         proxy_pid=$!
-        PROXY_PORT=$ROUTER_PORT
     else
-        echo "Starting Toy Proxy Server..."
+        echo "Starting Toy Proxy Server on port ${PROXY_PORT}..."
 
         UCX_TLS=tcp,self,shm NCCL_UCX_TLS=tcp VLLM_USE_V1=1 \
         python3 "/app/vllm/tests/v1/kv_connector/nixl_integration/toy_proxy_server.py" \
                 --host 0.0.0.0 \
-                --port $SERVER_PORT \
+                --port $PROXY_PORT \
                 --prefiller-hosts ${PREFILL_ARGS} \
                 --prefiller-ports ${PREFILL_PORTS} \
                 --decoder-hosts ${DECODE_ARGS} \
                 --decoder-ports ${DECODE_PORTS} 2>&1 | tee /run_logs/${SLURM_JOB_ID}/proxy_NODE${NODE_RANK}.log >/dev/null &
         proxy_pid=$!
-        PROXY_PORT=$SERVER_PORT
     fi
-    
+
     echo "Waiting for proxy server to be up . . ."
     python $NIXL_COOKBOOK_PATH/socket_barrier.py \
         --node-ips ${host_ip} \
@@ -249,8 +279,13 @@ if [ "$NODE_RANK" -eq 0 ]; then
 
     echo "Killing the proxy server"
     kill $proxy_pid
+    echo "Killing the prefill server"
+    kill $prefill_pid 2>/dev/null || true
 
-elif  [ "$NODE_RANK" -gt 0 ] && [ "$NODE_RANK" -le "$xP" ]; then
+elif [ "$NODE_RANK" -gt 0 ] && [ "$NODE_RANK" -lt "$xP" ]; then
+    # =================================================================
+    # Prefill child (only active when xP > 1)
+    # =================================================================
     echo "${host_name}:${host_ip} is Prefill Node (Model: ${MODEL_NAME:-'default'})"
     echo "Using prefill config: $PREFILL_MODEL_CONFIG"
 
@@ -302,9 +337,11 @@ elif  [ "$NODE_RANK" -gt 0 ] && [ "$NODE_RANK" -le "$xP" ]; then
     kill $prefill_pid
 
 else
+    # =================================================================
+    # Decode node (rank >= xP)
+    # =================================================================
     echo "${host_name}:${host_ip} is Decode Node (Model: ${MODEL_NAME:-'default'})"
     echo "Using decode config: $DECODE_MODEL_CONFIG"
-
 
     DECODE_CMD="LD_LIBRARY_PATH=/app/install/nixl/lib/x86_64-linux-gnu/:/app/install/ucx/lib:/opt/rocm/lib:\$LD_LIBRARY_PATH \
     ${DECODE_MODEL_ENVS} \

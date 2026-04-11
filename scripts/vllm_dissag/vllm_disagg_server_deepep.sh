@@ -1,16 +1,15 @@
 #!/bin/bash
 # vLLM Disaggregated Server - DeepEP + DBO Configuration
 # =============================================================================
-# Dedicated proxy node topology (matches run_xPyD_models.slurm).
+# Co-located proxy topology (matches run_xPyD_models.slurm).
 #
 # Node roles (by NODE_RANK):
-#   0               -> Proxy              (dedicated, no vLLM server)
-#   1               -> Prefill MASTER     (API server, DP coordinator)
-#   2  .. xP        -> Prefill CHILD      (--headless, no API server)
-#   xP+1            -> Decode MASTER      (API server, DP coordinator)
-#   xP+2 .. end     -> Decode CHILD       (--headless, no API server)
+#   0               -> Prefill MASTER + Proxy  (co-located, API server + DP coordinator + router)
+#   1  .. xP-1      -> Prefill CHILD           (--headless, no API server)
+#   xP              -> Decode MASTER           (API server, DP coordinator)
+#   xP+1 .. end     -> Decode CHILD            (--headless, no API server)
 #
-# Total nodes = xP + yD + 1
+# Total nodes = xP + yD
 
 # =============================================================================
 # Environment Configuration
@@ -39,7 +38,7 @@ KV_PORT=14600
 BARRIER_PORT="${BARRIER_PORT:-15000}"
 
 PROXY_TYPE="${PROXY_TYPE:-vllm_router}"
-ROUTER_PORT="${ROUTER_PORT:-2584}"
+ROUTER_PORT="${ROUTER_PORT:-8001}"
 PROXY_PORT="${ROUTER_PORT}"
 
 if [[ "$PROXY_TYPE" != "vllm_router" && "$PROXY_TYPE" != "toy_proxy" ]]; then
@@ -71,11 +70,11 @@ PREFILL_DP_SIZE=$((xP * 8))
 DECODE_DP_SIZE=$((yD * 8))
 DP_SIZE_LOCAL=8
 
-# Offset by 1: node 0 is the dedicated proxy
-PREFILL_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' '{print $2}')
-DECODE_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' -v pos="$xP" '{print $(pos+2)}')
-PREFILL_DP_START_RANK=$(( (NODE_RANK - 1) * DP_SIZE_LOCAL ))
-DECODE_DP_START_RANK=$(( (NODE_RANK - xP - 1) * DP_SIZE_LOCAL ))
+# Rank 0 is prefill master + proxy (co-located)
+PREFILL_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' '{print $1}')
+DECODE_MASTER_ADDR=$(echo "$IPADDRS" | awk -F',' -v pos="$xP" '{print $(pos+1)}')
+PREFILL_DP_START_RANK=$(( NODE_RANK * DP_SIZE_LOCAL ))
+DECODE_DP_START_RANK=$(( (NODE_RANK - xP) * DP_SIZE_LOCAL ))
 
 echo "============================================="
 echo "DeepEP Configuration for ${MODEL_NAME}"
@@ -371,17 +370,25 @@ sleep 3
 # Node Role Assignment and Server Launch
 # =============================================================================
 
-PREFILL_MASTER_IP="${IP_ARRAY[1]}"
-DECODE_MASTER_IP="${IP_ARRAY[$((xP + 1))]}"
+PREFILL_MASTER_IP="${IP_ARRAY[0]}"
+DECODE_MASTER_IP="${IP_ARRAY[$xP]}"
 MASTER_IPS="${PREFILL_MASTER_IP},${DECODE_MASTER_IP}"
 
 if [ "$NODE_RANK" -eq 0 ]; then
     # =================================================================
-    # Proxy (dedicated -- no vLLM server on this node)
+    # Rank 0: Prefill MASTER + Proxy (co-located)
     # =================================================================
-    print_node_info "Proxy node"
+    print_node_info "Prefill master + Proxy node (co-located)"
     echo "Prefill master IP : ${PREFILL_MASTER_IP}"
     echo "Decode master IP  : ${DECODE_MASTER_IP}"
+    echo "PREFILL_DP_SIZE=${PREFILL_DP_SIZE}  PREFILL_MASTER_ADDR=${PREFILL_MASTER_ADDR}"
+    echo "vLLM serve port: ${SERVER_PORT}  Proxy port: ${PROXY_PORT}"
+
+    launch_vllm_worker "prefill_master" "${PREFILL_DEEPEP_BACKEND}" \
+        "${PREFILL_DP_SIZE}" "${PREFILL_MASTER_ADDR}" \
+        "kv_producer" "pd-prefill" "prefill"
+
+    local_worker_pid="${WORKER_PID}"
 
     echo "Waiting for prefill & decode master servers to start..."
 
@@ -389,8 +396,8 @@ if [ "$NODE_RANK" -eq 0 ]; then
     SLEEP_SECONDS=10
     SEARCH_SIGNAL="Application startup complete."
 
-    PREFILL_LOG="/run_logs/${SLURM_JOB_ID}/prefill_NODE1.log"
-    DECODE_LOG="/run_logs/${SLURM_JOB_ID}/decode_NODE$((xP + 1)).log"
+    PREFILL_LOG="/run_logs/${SLURM_JOB_ID}/prefill_NODE0.log"
+    DECODE_LOG="/run_logs/${SLURM_JOB_ID}/decode_NODE${xP}.log"
 
     wait_log_signal_or_fail() {
         local LOG_FILE="$1"
@@ -414,7 +421,7 @@ if [ "$NODE_RANK" -eq 0 ]; then
     sleep 10
 
     if [ "$PROXY_TYPE" == "vllm_router" ]; then
-        echo "Starting vLLM Router (Production Proxy)..."
+        echo "Starting vLLM Router (Production Proxy) on port ${PROXY_PORT}..."
         [ -f /root/.cargo/env ] && source /root/.cargo/env
 
         PREFILL_URLS="--prefill http://${PREFILL_MASTER_IP}:${SERVER_PORT}"
@@ -434,7 +441,7 @@ if [ "$NODE_RANK" -eq 0 ]; then
             2>&1 | tee /run_logs/${SLURM_JOB_ID}/vllm_router_NODE${NODE_RANK}.log > /dev/null &
         proxy_pid=$!
     else
-        echo "Starting Toy Proxy Server..."
+        echo "Starting Toy Proxy Server on port ${PROXY_PORT}..."
 
         UCX_TLS=tcp,self,shm NCCL_UCX_TLS=tcp VLLM_USE_V1=1 \
         python3 "/app/vllm/tests/v1/kv_connector/nixl_integration/toy_proxy_server.py" \
@@ -461,23 +468,12 @@ if [ "$NODE_RANK" -eq 0 ]; then
 
     echo "Killing proxy server"
     kill "${proxy_pid}" 2>/dev/null || true
+    echo "Killing prefill master server"
+    kill "${local_worker_pid}" 2>/dev/null || true
 
-elif [ "$NODE_RANK" -eq 1 ]; then
+elif [ "$NODE_RANK" -gt 0 ] && [ "$NODE_RANK" -lt "$xP" ]; then
     # =================================================================
-    # Prefill MASTER (API server + DP coordinator)
-    # =================================================================
-    print_node_info "Prefill master node"
-    echo "PREFILL_DP_SIZE=${PREFILL_DP_SIZE}  PREFILL_MASTER_ADDR=${PREFILL_MASTER_ADDR}"
-
-    launch_vllm_worker "prefill_master" "${PREFILL_DEEPEP_BACKEND}" \
-        "${PREFILL_DP_SIZE}" "${PREFILL_MASTER_ADDR}" \
-        "kv_producer" "pd-prefill" "prefill"
-
-    wait_for_proxy_and_cleanup "${WORKER_PID}" "prefill master"
-
-elif [ "$NODE_RANK" -gt 1 ] && [ "$NODE_RANK" -le "$xP" ]; then
-    # =================================================================
-    # Prefill CHILD (--headless, no API server)
+    # Prefill CHILD (--headless, no API server; only when xP > 1)
     # =================================================================
     print_node_info "Prefill child node"
     echo "PREFILL_DP_SIZE=${PREFILL_DP_SIZE}  PREFILL_DP_START_RANK=${PREFILL_DP_START_RANK}"
@@ -488,7 +484,7 @@ elif [ "$NODE_RANK" -gt 1 ] && [ "$NODE_RANK" -le "$xP" ]; then
 
     wait_for_proxy_and_cleanup "${WORKER_PID}" "prefill child"
 
-elif [ "$NODE_RANK" -eq $((xP + 1)) ]; then
+elif [ "$NODE_RANK" -eq "$xP" ]; then
     # =================================================================
     # Decode MASTER (API server + DP coordinator)
     # =================================================================
@@ -503,7 +499,7 @@ elif [ "$NODE_RANK" -eq $((xP + 1)) ]; then
 
 else
     # =================================================================
-    # Decode CHILD (--headless, no API server)
+    # Decode CHILD (--headless, no API server; rank > xP)
     # =================================================================
     print_node_info "Decode child node"
     echo "DECODE_DP_SIZE=${DECODE_DP_SIZE}  DECODE_DP_START_RANK=${DECODE_DP_START_RANK}"

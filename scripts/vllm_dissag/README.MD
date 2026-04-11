@@ -10,7 +10,7 @@ This repository contains scripts and documentation to launch PD Disaggregation u
 
 ## Prerequisites
 
-- A Slurm cluster with required Nodes -> xP + yD + 1 (minimum size 3: xP=1 and yD=1)
+- A Slurm cluster with required Nodes -> xP + yD (minimum size 2: xP=1 and yD=1)
 - Docker container with VLLM, Nixl and NIC drivers built-in. Refer to Building the Docker image section below.
 - Access to a shared filesystem for log collection (cluster specific)
 
@@ -56,7 +56,7 @@ cd MAD/scripts/vllm_dissag
 
 export DOCKER_IMAGE_NAME=<DOCKER_IMAGE_NAME>
 export xP=1; export yD=1; export MODEL_NAME=DeepSeek-V3
-sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
+sbatch -N 2 -n 2 --nodelist=<node0,node1> run_xPyD_models.slurm
 ```
 
 ### MoRI EP mode
@@ -64,7 +64,7 @@ sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
 export DOCKER_IMAGE_NAME=<DOCKER_IMAGE_NAME>
 export RUN_MORI=1
 export xP=1; export yD=1; export MODEL_NAME=DeepSeek-R1
-sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
+sbatch -N 2 -n 2 --nodelist=<node0,node1> run_xPyD_models.slurm
 ```
 
 ### DeepEP mode
@@ -72,7 +72,7 @@ sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
 export DOCKER_IMAGE_NAME=<DOCKER_IMAGE_NAME>
 export RUN_DEEPEP=1
 export xP=1; export yD=1; export MODEL_NAME=DeepSeek-V3
-sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
+sbatch -N 2 -n 2 --nodelist=<node0,node1> run_xPyD_models.slurm
 ```
 
 ### DeepEP environment variables (optional)
@@ -85,17 +85,18 @@ sbatch -N 3 -n 3 --nodelist=<node0,node1,node2> run_xPyD_models.slurm
 | `DBO_COMM_SMS` | (vLLM default) | DBO communication SMs override |
 | `ENABLE_PROFILING` | `false` | Enable profiling |
 
-`num_nodes = xP + yD + 1` (1 dedicated proxy node + xP prefill nodes + yD decode nodes)
+`num_nodes = xP + yD` (proxy co-located on prefill master node)
 
 ## Node Topology (all modes)
 
 ```
-Node 0          -> Proxy (dedicated, no vLLM server)
-Node 1          -> Prefill MASTER
-Nodes 2..xP     -> Prefill CHILD (if xP > 1)
-Node xP+1       -> Decode MASTER
-Nodes xP+2..end -> Decode CHILD (if yD > 1)
+Node 0          -> Prefill MASTER + Proxy (co-located)
+Nodes 1..xP-1   -> Prefill CHILD (if xP > 1)
+Node xP         -> Decode MASTER
+Nodes xP+1..end -> Decode CHILD (if yD > 1)
 ```
+
+The proxy/router runs on the same node as the Prefill master (Node 0) to save one physical node. The proxy is CPU-only and listens on a separate port (default 8001) from the vLLM server (default 2584).
 
 ## Proxy Server Options
 
