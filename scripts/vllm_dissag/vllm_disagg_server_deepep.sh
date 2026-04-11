@@ -38,7 +38,7 @@ KV_PORT=14600
 BARRIER_PORT="${BARRIER_PORT:-15000}"
 
 PROXY_TYPE="${PROXY_TYPE:-vllm_router}"
-ROUTER_PORT="${ROUTER_PORT:-8001}"
+ROUTER_PORT="${ROUTER_PORT:-18001}"
 PROXY_PORT="${ROUTER_PORT}"
 
 if [[ "$PROXY_TYPE" != "vllm_router" && "$PROXY_TYPE" != "toy_proxy" ]]; then

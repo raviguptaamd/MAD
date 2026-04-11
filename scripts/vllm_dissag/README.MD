@@ -96,7 +96,7 @@ Node xP         -> Decode MASTER
 Nodes xP+1..end -> Decode CHILD (if yD > 1)
 ```
 
-The proxy/router runs on the same node as the Prefill master (Node 0) to save one physical node. The proxy is CPU-only and listens on a separate port (default 8001) from the vLLM server (default 2584).
+The proxy/router runs on the same node as the Prefill master (Node 0) to save one physical node. The proxy is CPU-only and listens on a separate port (default 18001) from the vLLM server (default 2584).
 
 ## Proxy Server Options
 

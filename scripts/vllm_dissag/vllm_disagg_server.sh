@@ -17,7 +17,7 @@ IPADDRS="${IPADDRS:-localhost}"
 
 # Proxy configuration: "vllm_router" (default) or "toy_proxy"
 PROXY_TYPE="${PROXY_TYPE:-vllm_router}"
-ROUTER_PORT="${ROUTER_PORT:-8001}"
+ROUTER_PORT="${ROUTER_PORT:-18001}"
 
 if [[ "$PROXY_TYPE" != "vllm_router" && "$PROXY_TYPE" != "toy_proxy" ]]; then
     echo "Error: Invalid PROXY_TYPE='$PROXY_TYPE'. Must be 'vllm_router' or 'toy_proxy'." >&2
