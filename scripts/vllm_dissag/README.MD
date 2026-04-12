@@ -26,7 +26,6 @@ docker build -t vllm_dissag_pd_image -f docker/vllm_disagg_inference.ubuntu.amd.
 ```
 
 ## Scripts and Benchmarking
-Run instructions - scripts/vllm_dissag/README.MD
 
 Key files:
 
@@ -125,6 +124,22 @@ export PROXY_TYPE=toy_proxy
 ```
 
 > **Note:** `PROXY_TYPE` and `ROUTER_PORT` apply to **Default** and **DeepEP** modes only. MoRI EP uses its own fixed proxy (`moriio_toy_proxy_server.py` on port 10001).
+
+## Benchmark Configuration (optional)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BENCHMARK_ITR` | `1` | Number of benchmark iterations |
+| `BENCHMARK_CON` | `8 16 32 64 128 256 512` | Space-separated concurrency levels |
+| `BENCHMARK_COMBINATIONS` | `1024/1024 8192/1024 1024/8192` | Space-separated ISL/OSL combinations |
+
+Example:
+```bash
+export BENCHMARK_ITR=2
+export BENCHMARK_CON="8 16 32"
+export BENCHMARK_COMBINATIONS="1024/1024 8192/1024"
+sbatch -N 2 -n 2 run_xPyD_models.slurm
+```
 
 ## Benchmark parser (for CONCURRENCY logs) to tabulate different data
 

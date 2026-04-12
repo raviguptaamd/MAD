@@ -164,8 +164,6 @@ MODEL_DIR="${MODEL_DIR:-"/shared_inference/models_blog/"}"
 # ------------------------
 # Model path validation and selection across all nodes
 # ------------------------
-ORIGINAL_MODEL_PATH="/shared_inference/models_blog/${MODEL_NAME}"
-
 echo "Looking for model: $MODEL_NAME"
 echo "Checking model availability across all allocated nodes..."
 
@@ -260,11 +258,7 @@ echo "SLURM_NTASKS: $SLURM_NTASKS"
 # Get the full nodelist and extract first NUM_NODES
 FULL_NODELIST=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
 SELECTED_NODES=$(echo "$FULL_NODELIST" | head -n $NUM_NODES)
-SELECTED_NODELIST_STR=$(echo "$SELECTED_NODES" | tr '\n' ',' | sed 's/,$//')
-
-# Create new nodelist in SLURM format
-# This is a simplified approach - for complex ranges, you might need more sophisticated parsing
-NEW_SLURM_NODELIST=$(echo "$SELECTED_NODES" | paste -sd, | sed 's/,/,/g')
+NEW_SLURM_NODELIST=$(echo "$SELECTED_NODES" | paste -sd,)
 
 # Update SLURM environment variables
 export SLURM_NNODES=$NUM_NODES
@@ -316,20 +310,6 @@ echo "Selected nodes for execution:"
 echo "$SELECTED_NODES"
 echo ""
 
-# Make sure xP*8 and yD*8 are multiples of 129280 for DeepSeek V3
-
-# ------------------------
-# SLURM Environment Variables
-# ------------------------
-echo "SLURM_JOB_ID: $SLURM_JOB_ID"
-echo "SLURM_JOB_NODELIST: $SLURM_JOB_NODELIST"
-echo "SLURM_NNODES: $SLURM_NNODES"
-echo "SLURM_NTASKS: $SLURM_NTASKS"
-echo "SLURM_TASKS_PER_NODE: $SLURM_TASKS_PER_NODE"
-echo "SLURM_JOB_CPUS_PER_NODE: $SLURM_JOB_CPUS_PER_NODE"
-echo "ulimit: $(ulimit -a)"
-echo ""
-
 # Node information
 USER_NAME=$(whoami)
 MASTER_NODE=$(echo "$SELECTED_NODES" | head -n 1)
@@ -348,11 +328,9 @@ done
 echo "Selected node IPs: ${IPS[*]}" | sed 's/ /,/g'
 
 NIXL_COOKBOOK_PATH="/opt/nixl-vllm-cookbook"
-BENCHMARK_FILE="${BENCHMARK_FILE:-$NIXL_COOKBOOK_PATH/dissag_blog_p1/models_blog/run_xPyD_models.slurm}"
 BENCHMARK_ITR="${BENCHMARK_ITR:-1}"
 BENCHMARK_CON="${BENCHMARK_CON:-}"
 BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS:-}"
-timestamp=$(date +"%Y-%m-%d_%H-%M-%S")
 
 NNODES=$NUM_NODES
 
@@ -448,7 +426,6 @@ docker run --rm \
     -e yD=$yD \
     -e USER_NAME=$USER_NAME \
     -e MODEL_NAME=$MODEL_NAME \
-    -e BENCHMARK_FILE=$BENCHMARK_FILE \
     -e BENCHMARK_ITR=$BENCHMARK_ITR \
     -e BENCHMARK_CON="${BENCHMARK_CON}" \
     -e BENCHMARK_COMBINATIONS="${BENCHMARK_COMBINATIONS}" \

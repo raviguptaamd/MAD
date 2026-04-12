@@ -62,9 +62,6 @@ echo "DECODE_MASTER_ADDR=${DECODE_MASTER_ADDR}"
 host_ip=$(hostname -I | awk '{print $1}')
 host_name=$(hostname)
 
-echo "Listing NIXL_COOKBOOK_PATH : "
-ls ${NIXL_COOKBOOK_PATH}
-
 # =============================================================================
 # Helper Functions
 # =============================================================================

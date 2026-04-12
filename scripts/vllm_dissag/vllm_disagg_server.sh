@@ -34,8 +34,6 @@ ls ${NIXL_COOKBOOK_PATH}
 pip install py-spy
 pip install --ignore-installed --force-reinstall flask
 
-#trap 'echo "Error occurred. Cleaning up..."; exit 0' ERR
-
 host_ip=$(hostname -I | awk '{print $1}')
 host_name=$(hostname)
 SERVER_PORT=2584
@@ -121,9 +119,8 @@ get_model_envs() {
 }
 
 if [[ -z "$MODEL_NAME" ]]; then
-    echo "Warning: MODEL_NAME not set, using default configurations"
-    echo "ERROR: please set MODEL_NAME"
-    exit 0
+    echo "ERROR: MODEL_NAME not set. Please export MODEL_NAME before running." >&2
+    exit 1
 else
     PREFILL_MODEL_CONFIG=$(get_model_config "prefill" "$MODEL_NAME")
     DECODE_MODEL_CONFIG=$(get_model_config "decode" "$MODEL_NAME")
@@ -204,7 +201,8 @@ if [ "$NODE_RANK" -eq 0 ]; then
     VLLM_NIXL_SIDE_CHANNEL_HOST=\${host_ip} \
     VLLM_NIXL_SIDE_CHANNEL_PORT=5557 \
     UCX_TLS=rc,sm,self,rocm_copy,rocm_ipc,tcp \
-    UCX_NET_DEVICES=mlx5_0:1 \
+    UCX_NET_DEVICES=${UCX_NET_DEVICES} \
+    NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME} \
     UCX_SOCKADDR_TLS_PRIORITY=rdmacm,tcp \
     UCX_SOCKADDR_CM_ENABLE=y \
     UCX_RDMA_CM_ENABLED=y \
@@ -306,7 +304,8 @@ elif [ "$NODE_RANK" -gt 0 ] && [ "$NODE_RANK" -lt "$xP" ]; then
     VLLM_NIXL_SIDE_CHANNEL_HOST=\${host_ip} \
     VLLM_NIXL_SIDE_CHANNEL_PORT=5557 \
     UCX_TLS=rc,sm,self,rocm_copy,rocm_ipc,tcp \
-    UCX_NET_DEVICES=mlx5_0:1 \
+    UCX_NET_DEVICES=${UCX_NET_DEVICES} \
+    NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME} \
     UCX_SOCKADDR_TLS_PRIORITY=rdmacm,tcp \
     UCX_SOCKADDR_CM_ENABLE=y \
     UCX_RDMA_CM_ENABLED=y \
@@ -358,7 +357,8 @@ else
     VLLM_NIXL_SIDE_CHANNEL_HOST=\${host_ip} \
     VLLM_NIXL_SIDE_CHANNEL_PORT=5557 \
     UCX_TLS=rc,sm,self,rocm_copy,rocm_ipc,tcp \
-    UCX_NET_DEVICES=mlx5_0:1 \
+    UCX_NET_DEVICES=${UCX_NET_DEVICES} \
+    NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME} \
     UCX_SOCKADDR_TLS_PRIORITY=rdmacm,tcp \
     UCX_SOCKADDR_CM_ENABLE=y \
     UCX_RDMA_CM_ENABLED=y \
