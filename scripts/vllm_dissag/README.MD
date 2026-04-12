@@ -1,10 +1,12 @@
 ## List of Models - focus VLLM Disaggregated P/D inference
 
-Dense Models
-- deepseek-ai/DeepSeek-V3 (https://huggingface.co/deepseek-ai/DeepSeek-V3)
-- amd/Llama-3.3-70B-Instruct-FP8-KV (https://huggingface.co/amd/Llama-3.3-70B-Instruct-FP8-KV)
-- amd/Llama-3.1-405B-Instruct-FP8-KV (https://huggingface.co/amd/Llama-3.1-405B-Instruct-FP8-KV)
-- openai/gpt-oss-120b - (https://huggingface.co/openai/gpt-oss-120b)
+Supported Models (use these exact `MODEL_NAME` values):
+- DeepSeek-R1
+- DeepSeek-V3
+- DeepSeek-V3-5layer
+- amd-Llama-3.3-70B-Instruct-FP8-KV
+- Llama-3.1-405B-Instruct-FP8-KV
+- gpt-oss-120b
 
 This repository contains scripts and documentation to launch PD Disaggregation using the Nixl framework for above models. You will find setup instructions, node assignment details and benchmarking commands.
 
@@ -19,7 +21,8 @@ This repository contains scripts and documentation to launch PD Disaggregation u
 
 
 ```bash
-docker build  -t vllm_dissag_pd_image -f vllm_dissag_inference.ubuntu.amd.Dockerfile .
+cd MAD
+docker build -t vllm_dissag_pd_image -f docker/vllm_disagg_inference.ubuntu.amd.Dockerfile .
 ```
 
 ## Scripts and Benchmarking
@@ -96,7 +99,15 @@ Node xP         -> Decode MASTER
 Nodes xP+1..end -> Decode CHILD (if yD > 1)
 ```
 
-The proxy/router runs on the same node as the Prefill master (Node 0) to save one physical node. The proxy is CPU-only and listens on a separate port (default 18001) from the vLLM server (default 2584).
+The proxy/router runs on the same node as the Prefill master (Node 0) to save one physical node. The proxy is CPU-only and listens on a separate port from the vLLM server.
+
+**Port defaults by mode:**
+
+| Mode | vLLM Server Port | Proxy Port |
+|------|-----------------|------------|
+| Default (NixlConnector) | 2584 | 18001 (`ROUTER_PORT`) |
+| DeepEP | 2584 | 18001 (`ROUTER_PORT`) |
+| MoRI EP | 20005 | 10001 (fixed, MoRI-specific) |
 
 ## Proxy Server Options
 
@@ -112,6 +123,8 @@ The scripts support two proxy server types via the `PROXY_TYPE` environment vari
 export PROXY_TYPE=toy_proxy
 # Then run sbatch/srun as usual
 ```
+
+> **Note:** `PROXY_TYPE` and `ROUTER_PORT` apply to **Default** and **DeepEP** modes only. MoRI EP uses its own fixed proxy (`moriio_toy_proxy_server.py` on port 10001).
 
 ## Benchmark parser (for CONCURRENCY logs) to tabulate different data
 

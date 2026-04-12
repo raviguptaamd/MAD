@@ -41,7 +41,7 @@ for i in $(seq 1 $BENCHMARK_ITR); do
            if [ "$p_con" -lt 16 ]; then
                p_con=16
            fi
-           echo "[RUNNING] prompts $prompts isl $isl osl $osl con $con"
+           echo "[RUNNING] prompts $p_con isl $isl osl $osl con $con"
            vllm bench serve \
            --model $MODEL_PATH \
            --backend vllm \
