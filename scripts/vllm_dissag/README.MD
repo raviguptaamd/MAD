@@ -44,7 +44,7 @@ The `run_xPyD_models.slurm` script supports three run modes, controlled by the `
 | Mode | Env Variable | Server Script | KV Connector | Models |
 |------|-------------|---------------|--------------|--------|
 | Default (NixlConnector) | Neither set | `vllm_disagg_server.sh` | NixlConnector | All VALID_MODELS |
-| MoRI EP | `RUN_MORI=1` | `vllm_disagg_mori_ep.sh` | MoRIIOConnector | DeepSeek-R1 |
+| MoRI EP | `RUN_MORI=1` | `vllm_disagg_mori_ep.sh` | MoRIIOConnector | DeepSeek-V3, DeepSeek-V3-5layer, DeepSeek-R1 |
 | DeepEP | `RUN_DEEPEP=1` | `vllm_disagg_server_deepep.sh` | NixlConnector | DeepSeek-V3, DeepSeek-V3-5layer, DeepSeek-R1 |
 
 Setting both `RUN_MORI=1` and `RUN_DEEPEP=1` will exit with an error.

@@ -56,6 +56,8 @@ VALID_MODELS=( \
 
 # Models allowed for vllm_disagg_mori_ep.sh when RUN_MORI=1
 MORI_EP_VALID_MODELS=( \
+    "DeepSeek-V3" \
+    "DeepSeek-V3-5layer" \
     "DeepSeek-R1" \
 )
 
