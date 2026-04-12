@@ -14,10 +14,13 @@
 # Auto-detect and cd to the script directory so that $(pwd) always
 # points to the folder containing the server scripts, regardless of
 # where the user called sbatch from.
+# Under Slurm, $0 points to a spool copy, so prefer SLURM_SUBMIT_DIR.
 # ------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
-if [[ -z "$SCRIPT_DIR" ]]; then
-    SCRIPT_DIR="${SLURM_SUBMIT_DIR:-.}"
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    SCRIPT_DIR="$SLURM_SUBMIT_DIR"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+    SCRIPT_DIR="${SCRIPT_DIR:-.}"
 fi
 cd "$SCRIPT_DIR" || { echo "Error: cannot cd to $SCRIPT_DIR" >&2; exit 1; }
 
