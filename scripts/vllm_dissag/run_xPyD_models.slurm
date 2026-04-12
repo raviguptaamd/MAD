@@ -11,6 +11,28 @@
 
 
 # ------------------------
+# Auto-detect and cd to the script directory so that $(pwd) always
+# points to the folder containing the server scripts, regardless of
+# where the user called sbatch from.
+# ------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)"
+if [[ -z "$SCRIPT_DIR" ]]; then
+    SCRIPT_DIR="${SLURM_SUBMIT_DIR:-.}"
+fi
+cd "$SCRIPT_DIR" || { echo "Error: cannot cd to $SCRIPT_DIR" >&2; exit 1; }
+
+REQUIRED_FILES=("vllm_disagg_server.sh" "vllm_disagg_mori_ep.sh" "vllm_disagg_server_deepep.sh" "benchmark_xPyD.sh")
+for f in "${REQUIRED_FILES[@]}"; do
+    if [[ ! -f "$f" ]]; then
+        echo "Error: Required file '$f' not found in $(pwd)." >&2
+        echo "Please run sbatch from the scripts/vllm_dissag/ directory, e.g.:" >&2
+        echo "  cd MAD/scripts/vllm_dissag && sbatch run_xPyD_models.slurm" >&2
+        exit 1
+    fi
+done
+echo "Running from: $(pwd)"
+
+# ------------------------
 # Print current time in UTC and PST formats
 # ------------------------
 echo "=== Job Start Time ==="
