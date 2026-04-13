@@ -59,7 +59,9 @@ echo "PREFILL_DP_START_RANK=${PREFILL_DP_START_RANK}"
 echo "PREFILL_MASTER_ADDR=${PREFILL_MASTER_ADDR}"
 echo "DECODE_DP_START_RANK=${DECODE_DP_START_RANK}"
 echo "DECODE_MASTER_ADDR=${DECODE_MASTER_ADDR}"
-host_ip=$(hostname -I | awk '{print $1}')
+_DEF_IF=$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')
+host_ip=$(ip -o -4 addr show dev ${_DEF_IF:-eno0} 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+host_ip=${host_ip:-$(hostname -I | awk '{print $1}')}
 host_name=$(hostname)
 
 # =============================================================================
@@ -74,10 +76,15 @@ setup_mori_env() {
     export VLLM_ROCM_USE_AITER_MLA=1
     export VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0
     export VLLM_ALL2ALL_BACKEND=mori
-    export GLOO_SOCKET_IFNAME=eth0
+    GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')}"
+    export GLOO_SOCKET_IFNAME="${GLOO_SOCKET_IFNAME:-eth0}"
+    export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-${GLOO_SOCKET_IFNAME}}"
     export VLLM_ENGINE_READY_TIMEOUT_S=3600
     export VLLM_RINGBUFFER_WARNING_INTERVAL=3600
     export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=3600
+    export MORI_DISABLE_TOPO="${MORI_DISABLE_TOPO:-1}"
+    export MORI_IB_GID_INDEX="${MORI_IB_GID_INDEX:-1}"
+    export MORI_DISABLE_P2P="${MORI_DISABLE_P2P:-}"
 }
 
 build_kv_transfer_config() {
@@ -120,7 +127,7 @@ launch_vllm_worker() {
         --data-parallel-rpc-port ${RPC_PORT} \
         --enable-expert-parallel \
         --port ${SERVE_PORT} \
-        --gpu-memory-utilization 0.8 \
+        --gpu-memory-utilization 0.7 \
         --kv-cache-dtype fp8 \
         --block-size 1 \
         --no-enable-prefix-caching \

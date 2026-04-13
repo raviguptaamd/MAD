@@ -59,6 +59,8 @@ MORI_EP_VALID_MODELS=( \
     "DeepSeek-V3" \
     "DeepSeek-V3-5layer" \
     "DeepSeek-R1" \
+    "DeepSeek-V3" \
+    "DeepSeek-V3-5layer" \
 )
 
 # Models allowed for vllm_disagg_server_deepep.sh when RUN_DEEPEP=1
@@ -208,9 +210,11 @@ check_model_path() {
     fi
 }
 
-# Check /mnt/m2m_nobackup/models_blog first
-MODEL_PATH_1="/mnt/m2m_nobackup/models_blog/$MODEL_NAME"
-if check_model_path "$MODEL_PATH_1" "/mnt/m2m_nobackup/models_blog"; then
+# If MODEL_PATH is already set externally, skip multi-node check
+if [[ -n "${MODEL_PATH:-}" ]]; then
+    echo "MODEL_PATH already set to: $MODEL_PATH (skipping multi-node check)"
+elif check_model_path "/mnt/m2m_nobackup/models_blog/$MODEL_NAME" "/mnt/m2m_nobackup/models_blog"; then
+    MODEL_PATH="/mnt/m2m_nobackup/models_blog/$MODEL_NAME"
     MODEL_PATH="$MODEL_PATH_1"
     echo ""
     echo "✓ Selected MODEL_PATH: $MODEL_PATH (available on all nodes)"
@@ -318,14 +322,17 @@ echo ""
 # Node information
 USER_NAME=$(whoami)
 MASTER_NODE=$(echo "$SELECTED_NODES" | head -n 1)
-MASTER_ADDR=$(srun --nodes=1 --ntasks=1 --time=00:20:00 --nodelist="$MASTER_NODE" bash -c 'hostname -I')
+SRUN_JOBID_FLAG=""
+[[ -n "${SLURM_JOB_ID:-}" ]] && SRUN_JOBID_FLAG="--jobid=$SLURM_JOB_ID --overlap"
+_GET_IP='_IF=$(ip -o -4 route show default 2>/dev/null | awk "{print \$5; exit}"); ip -o -4 addr show dev ${_IF:-eno0} 2>/dev/null | awk "{print \$4}" | cut -d/ -f1 | head -1'
+MASTER_ADDR=$(srun $SRUN_JOBID_FLAG --nodes=1 --ntasks=1 --time=00:20:00 --nodelist="$MASTER_NODE" bash -c "$_GET_IP")
 MASTER_ADDR=$(echo "$MASTER_ADDR" | awk 'NR==1 {print $1}')
 MASTER_PORT=39566  # Choose an open port
 
 IPS=()
 
 for NODE in $SELECTED_NODES; do
-    IP=$(srun --nodes=1 --ntasks=1 --time=00:20:00 --nodelist="$NODE" bash -c 'hostname -I')
+    IP=$(srun $SRUN_JOBID_FLAG --nodes=1 --ntasks=1 --time=00:20:00 --nodelist="$NODE" bash -c "$_GET_IP")
     IP=$(echo "$IP" | awk 'NR==1 {print $1}')
     IPS+=("$IP")
 done
@@ -374,7 +381,7 @@ export RUN_FILE_FULL="$NIXL_COOKBOOK_PATH/${RUN_FILE}"
 # Use only the selected nodes for srun execution
 SELECTED_NODELIST_SRUN=$(echo "$SELECTED_NODES" | paste -sd,)
 
-srun --nodelist="$SELECTED_NODELIST_SRUN" bash -c '
+srun $SRUN_JOBID_FLAG --nodelist="$SELECTED_NODELIST_SRUN" bash -c '
 echo "Rank $SLURM_PROCID on $(hostname)";
 docker ps -q | xargs --no-run-if-empty docker stop;
 fuser -k 5000/tcp 2>/dev/null || true;
@@ -384,9 +391,6 @@ sleep 2;
 docker pull $DOCKER_IMAGE_NAME 2>/dev/null || true;
 
 # --- Build host RDMA library mounts ---
-# Mount the host MLNX OFED userspace libraries into the container so that
-# libmlx5 / libibverbs always match the host kernel module, preventing
-# mlx5dv_devx_alloc_uar failures from ABI mismatches.
 _RDMA_MOUNTS=""
 _LIBDIR=/usr/lib/x86_64-linux-gnu
 for _lib in libmlx5.so libmlx5.so.1 libibverbs.so libibverbs.so.1 librdmacm.so librdmacm.so.1; do
@@ -397,6 +401,12 @@ for _vlib in $_LIBDIR/libmlx5.so.1.* $_LIBDIR/libibverbs.so.1.* $_LIBDIR/librdma
 done
 [ -d "$_LIBDIR/libibverbs" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/libibverbs:$_LIBDIR/libibverbs:ro"
 [ -d /etc/libibverbs.d ]     && _RDMA_MOUNTS="$_RDMA_MOUNTS -v /etc/libibverbs.d:/etc/libibverbs.d:ro"
+for _ionic in libionic-rdmav34.so libionic.so libionic.so.1; do
+    [ -e "$_LIBDIR/$_ionic" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_LIBDIR/$_ionic:$_LIBDIR/$_ionic:ro"
+done
+for _ionic_v in $_LIBDIR/libionic.so.1.*; do
+    [ -e "$_ionic_v" ] && _RDMA_MOUNTS="$_RDMA_MOUNTS -v $_ionic_v:$_ionic_v:ro"
+done
 echo "[host-rdma] mounts: $_RDMA_MOUNTS"
 
 docker run --rm \
@@ -410,6 +420,7 @@ docker run --rm \
     --security-opt seccomp=unconfined \
     --privileged \
     -v $HOME:$HOME \
+    -v /it-share:/it-share \
     -v /shared_inference:/shared_inference \
     -v /mnt/m2m_nobackup:/mnt/m2m_nobackup \
     -v $HOME/.ssh:/root/.ssh \
@@ -443,11 +454,19 @@ docker run --rm \
     -e ENABLE_DBO=${ENABLE_DBO:-} \
     -e DBO_COMM_SMS=${DBO_COMM_SMS:-} \
     -e ENABLE_PROFILING=${ENABLE_PROFILING:-} \
+    -e NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME:-} \
+    -e GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME:-} \
+    -e UCX_NET_DEVICES=${UCX_NET_DEVICES:-} \
+    -e MORI_DISABLE_TOPO=${MORI_DISABLE_TOPO:-1} \
+    -e MORI_IB_GID_INDEX=${MORI_IB_GID_INDEX:-} \
+    -e MORI_RDMA_DEVICES=${MORI_RDMA_DEVICES:-} \
+    -e MORI_NUM_QP_PER_PE=${MORI_NUM_QP_PER_PE:-} \
+    -e MORI_DISABLE_P2P=${MORI_DISABLE_P2P:-} \
     --name $DOCKER_CONT_NAME \
     $DOCKER_IMAGE_NAME -c "
         mkdir -p /run_logs/${SLURM_JOB_ID}
         $RUN_FILE_FULL 2>&1 | tee /run_logs/${SLURM_JOB_ID}/pd_vllm_bench_NODE${SLURM_PROCID}.log
     "
 '
-srun --nodelist="$SELECTED_NODELIST_SRUN" bash -c 'docker stop $DOCKER_CONT_NAME; docker rm $DOCKER_CONT_NAME'
+srun $SRUN_JOBID_FLAG --nodelist="$SELECTED_NODELIST_SRUN" bash -c 'docker stop $DOCKER_CONT_NAME; docker rm $DOCKER_CONT_NAME'
 

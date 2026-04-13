@@ -50,8 +50,9 @@ if [[ -z "$UCX_NET_DEVICES" ]]; then
 fi
 
 if [[ -z "$NCCL_SOCKET_IFNAME" ]]; then
-    export NCCL_SOCKET_IFNAME="eth0"
-    echo "Defaulting NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME}"
+    NCCL_SOCKET_IFNAME=$(ip -o -4 route show default 2>/dev/null | awk '{print $5; exit}')
+    export NCCL_SOCKET_IFNAME="${NCCL_SOCKET_IFNAME:-eth0}"
+    echo "Auto-detected NCCL_SOCKET_IFNAME=${NCCL_SOCKET_IFNAME}"
 fi
 
 # =============================================================================
