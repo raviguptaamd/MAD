@@ -61,18 +61,18 @@ fi
 declare -A MODEL_PREFILL_CONFIGS=(
     ["Llama-3.1-405B-Instruct-FP8-KV"]="--tensor-parallel-size 8 --kv-cache-dtype fp8"
     ["amd-Llama-3.3-70B-Instruct-FP8-KV"]="--tensor-parallel-size 8 --max-model-len 65536 --kv-cache-dtype fp8"
-    ["DeepSeek-V3"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
-    ["DeepSeek-V3-5layer"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
-    ["DeepSeek-R1"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
+    ["DeepSeek-V3"]="--tensor-parallel-size 8 --compilation-config '{\"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
+    ["DeepSeek-V3-5layer"]="--tensor-parallel-size 8 --compilation-config '{\"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
+    ["DeepSeek-R1"]="--tensor-parallel-size 8 --compilation-config '{\"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
     ["gpt-oss-120b"]="--tensor-parallel-size 8"
 )
 
 declare -A MODEL_DECODE_CONFIGS=(
     ["Llama-3.1-405B-Instruct-FP8-KV"]="--tensor-parallel-size 8 --kv-cache-dtype fp8"
     ["amd-Llama-3.3-70B-Instruct-FP8-KV"]="--tensor-parallel-size 8 --max-model-len 65536 --kv-cache-dtype fp8"
-    ["DeepSeek-V3"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
-    ["DeepSeek-V3-5layer"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
-    ["DeepSeek-R1"]="--tensor-parallel-size 8 --compilation-config '{\"full_cuda_graph\": false, \"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
+    ["DeepSeek-V3"]="--tensor-parallel-size 8 --compilation-config '{\"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
+    ["DeepSeek-V3-5layer"]="--tensor-parallel-size 8 --compilation-config '{\"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
+    ["DeepSeek-R1"]="--tensor-parallel-size 8 --compilation-config '{\"cudagraph_mode\":\"PIECEWISE\"}' --no-enable-prefix-caching --block-size 1"
     ["gpt-oss-120b"]="--tensor-parallel-size 8"
 )
 
