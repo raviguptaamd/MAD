@@ -162,7 +162,8 @@ _glm_dsa_runtime_patch() {
         apply_glm_dsa_kernel_fix.py \
         apply_glm_dsa_moriio_dualkv_fix.py \
         apply_glm_dsa_moriio_engine_fix.py \
-        apply_glm_dsa_moriio_gate_fix.py; do
+        apply_glm_dsa_moriio_gate_fix.py \
+        apply_glm_moriio_abort_guard_fix.py; do
         local _py="${_patch_dir}/${_p}"
         if [ ! -f "${_py}" ]; then
             echo "Error: [glm] required patcher ${_py} not found. Aborting." >&2
