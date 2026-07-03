@@ -99,6 +99,21 @@ def main() -> int:
         print("[glm-gate] connector/engine not found -- skipping (layout differs).")
         return 0
 
+    # ATOMIC: both halves (connector defines num_transfer_layers, engine gates on
+    # it) are needed together or not at all. On a restructured image (e.g. mori
+    # v1.2.1, whose engine replaced the writes_done>=num_layers gate with a sealed
+    # writes_expected mechanism that already handles hybrid/DSA dual-KV natively),
+    # the engine anchor is gone. Applying only the connector half would inject a
+    # dead num_transfer_layers into restructured internals. So if the engine anchor
+    # is absent, skip BOTH — the native gate already does the right thing.
+    eng_src = open(eng).read()
+    eng_gate_present = "        if request_info.writes_done >= self.worker.num_layers:" in eng_src
+    eng_already = "num_transfer_layers" in eng_src
+    if not eng_gate_present and not eng_already:
+        print("[glm-gate] engine gate anchor absent (image restructured, e.g. mori "
+              "v1.2.1 sealed writes_expected) -- skipping BOTH halves (native gate handles DSA).")
+        return 0
+
     rc = patch_connector(conn) or patch_engine(eng)
     if rc:
         return rc
