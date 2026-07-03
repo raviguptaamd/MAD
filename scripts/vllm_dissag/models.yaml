@@ -178,3 +178,51 @@ DeepSeek-R1:
     dp: ""
   decode:
     dp: ""
+
+# ============================ MoE + DSA (wideEP only) ============================
+
+# GLM-5.1-FP8 (zai-org/GLM-5.1-FP8, arch GlmMoeDsaForCausalLM): MLA + DeepSeek
+# Sparse Attention (DSA). 78 layers (3 dense + 75 MoE), 256 routed experts top-8
+# + 1 shared, FP8 block 128. wideEP-only (see WIDE_EP_ONLY_MODELS in the slurm).
+#
+# GLM differs from DeepSeek in 3 recipe-defining ways (both are MLA MoE, but GLM
+# is DSA-sparse):
+#   - KV_BLOCK_SIZE=1        (DSA sparse indexer REQUIRES block-size 1; DS uses 16)
+#   - VLLM_ROCM_USE_AITER_MLA=1  (GLM MLA path ON via AITER sparse; DS sets 0)
+#   - eager BOTH roles       (DSA + cudagraph unproven; DS runs PIECEWISE decode)
+# Note: block=1 + AITER_MLA=1 are ALREADY the moriio.sh connector defaults — GLM
+# keeps them; DeepSeek is the one that overrides them off. Set here explicitly so
+# the recipe is self-documenting and robust to connector default changes.
+#
+# DSA adds a 2nd KV cache per layer (indexer); the MoRIIO connector needs the GLM
+# DSA patchers (kernel #45324 + dual-KV geometry + per-layer offset + completion
+# gate) applied by connector_runtime_patch in connectors/moriio.sh (gated on this
+# MODEL_NAME). Those are code patches, not flags — nothing to add here for them.
+#
+# dp_flags carry the GLM tool/reasoning parsers (AMD GLM recipe). They are applied
+# to BOTH roles by compose() in vllm_disagg.sh and reach `vllm serve` via the
+# connector's model_args. block-size / kv-cache-dtype / all2all / cudagraph come
+# from the env: recipe above (the connector emits them), so the dp: blocks are
+# empty like the DeepSeek family.
+GLM-5.1-FP8:
+  env:
+    VLLM_USE_V1: "1"
+    VLLM_ROCM_USE_AITER: "1"
+    VLLM_ROCM_USE_AITER_RMSNORM: "1"
+    VLLM_ROCM_USE_AITER_MLA: "1"
+    KV_BLOCK_SIZE: "1"
+    KV_CACHE_DTYPE: "fp8"
+    GPU_MEMORY_UTILIZATION: "0.80"
+    VLLM_CUDAGRAPH_MODE: "NONE"
+    PREFILL_CUDAGRAPH_MODE: "NONE"
+    DECODE_CUDAGRAPH_MODE: "NONE"
+    CUDAGRAPH_CAPTURE_SIZES: "1 2 4 8 16 32 64 128 256"
+    VLLM_ALL2ALL_BACKEND: "mori_high_throughput"
+    PREFILL_MORI_BACKEND: "mori_high_throughput"
+    DECODE_MORI_BACKEND: "mori_low_latency"
+    MORI_SHMEM_HEAP_SIZE: "17179869184"
+  dp_flags: "--tool-call-parser glm47 --reasoning-parser glm45 --enable-auto-tool-choice --chat-template-content-format string"
+  prefill:
+    dp: ""
+  decode:
+    dp: ""

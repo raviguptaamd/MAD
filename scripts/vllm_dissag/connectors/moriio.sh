@@ -124,13 +124,65 @@ _moriio_build_kv_transfer_config() {
 }
 
 connector_runtime_patch() {
-    # No-op: the MoRIIO multi-node disagg fixes (vLLM PR#39276 notify-path, #41751 LL
-    # split, DP-rank hash-failsafe) are committed in-source in the vLLM the image is
-    # built from (see the Dockerfile VLLM_REF). There is no runtime .py patcher — that
-    # would be a drifting duplicate of fixes that already live upstream in the fork.
-    # If you ever run an image WITHOUT these fixes baked, use an image that has them
-    # (rebuild from the pinned VLLM_REF) rather than patching a stock image at runtime.
-    return 0
+    # MoRIIO multi-node disagg fixes (vLLM PR#39276 notify-path, #41751 LL split,
+    # DP-rank hash-failsafe) are committed in-source in the vLLM the image is built
+    # from (Dockerfile VLLM_REF). There is no generic runtime .py patcher for those —
+    # that would be a drifting duplicate of fixes already upstream in the fork.
+    #
+    # EXCEPTION — GLM-5.1-FP8 (GlmMoeDsaForCausalLM, MLA + DSA sparse attention):
+    # DSA is a NEW attention family the MoRIIO connector was never built for. It adds
+    # a 2nd KV cache per layer (indexer) with a different geometry, which the
+    # single-geometry connector mis-handles -> disagg KV transfer stalls; plus a DSA
+    # invalid-token kernel bug (#45324) that produces `!!!`. These are model-specific
+    # code gaps, applied here as idempotent, anchor-based, self-skipping .py patchers
+    # (they no-op cleanly if the fix is native/refactored on the chosen image). Gated
+    # on MODEL_NAME so DeepSeek/other models are a pure no-op (byte-identical to before).
+    [ "${MODEL_NAME:-}" = "GLM-5.1-FP8" ] || return 0
+    _glm_dsa_runtime_patch
+}
+
+# GLM-5.1 DSA patchers (see connector_runtime_patch). Ported from MAD-private #338.
+# Resolves the vLLM install dir, then applies the 4 required patchers in order,
+# aborting on a hard failure (a real failure means GLM emits garbage or stalls, so
+# failing at launch is correct). Patchers self-skip (rc 0) when their anchor is
+# absent, so an image that already carries or refactored a fix no-ops cleanly.
+_glm_dsa_runtime_patch() {
+    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+    local _vllm_dir
+    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
+    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
+        echo "Error: [glm] cannot locate vLLM install dir for DSA patchers. Aborting." >&2
+        exit 1
+    fi
+    echo "[glm] MODEL_NAME=GLM-5.1-FP8: applying DSA runtime patchers against ${_vllm_dir}"
+
+    # Ordered list of REQUIRED patchers (all abort on hard failure).
+    local _p
+    for _p in \
+        apply_glm_dsa_kernel_fix.py \
+        apply_glm_dsa_moriio_dualkv_fix.py \
+        apply_glm_dsa_moriio_engine_fix.py \
+        apply_glm_dsa_moriio_gate_fix.py; do
+        local _py="${_patch_dir}/${_p}"
+        if [ ! -f "${_py}" ]; then
+            echo "Error: [glm] required patcher ${_py} not found. Aborting." >&2
+            exit 1
+        fi
+        echo "[glm] applying ${_p}"
+        python3 "${_py}" "${_vllm_dir}" 2>&1 || {
+            echo "Error: [glm] ${_p} failed — GLM-5.1 would emit garbage or stall. Aborting." >&2
+            exit 1
+        }
+    done
+
+    # Optional diagnostic instrumentation (GLM_INSTRUMENT=1). Non-fatal.
+    if [ "${GLM_INSTRUMENT:-0}" = "1" ]; then
+        local _instr="${_patch_dir}/apply_glm_dsa_moriio_instrument.py"
+        if [ -f "${_instr}" ]; then
+            echo "[glm] applying instrumentation (GLM_INSTRUMENT=1): apply_glm_dsa_moriio_instrument.py"
+            python3 "${_instr}" "${_vllm_dir}" 2>&1 || echo "Warning: [glm] instrumentation failed (non-fatal)."
+        fi
+    fi
 }
 
 # connector_launch_worker <role> <dp_size> <dp_addr> <kv_role> <log_prefix> [dp_start_rank]
@@ -219,7 +271,7 @@ connector_launch_worker() {
                     --all2all-backend "${_all2all}" \
                     --trust-remote-code \
                     --distributed-timeout-seconds "${DISTRIBUTED_TIMEOUT_SECONDS:-7200}" \
-                    "${exec_args[@]}" "${extra_args[@]}" "${kv_args[@]}"
+                    "${exec_args[@]}" "${extra_args[@]}" "${kv_args[@]}" "${model_args[@]}"
             WORKER_PID=0; return 0
         fi
 
@@ -242,6 +294,7 @@ connector_launch_worker() {
             "${exec_args[@]}" \
             "${extra_args[@]}" \
             "${kv_args[@]}" \
+            "${model_args[@]}" \
             2>&1 | tee /run_logs/${SLURM_JOB_ID}/${log_prefix}_NODE${NODE_RANK}.log >/dev/null &
         WORKER_PID=$!
         return 0
