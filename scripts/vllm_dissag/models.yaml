@@ -196,7 +196,10 @@ DeepSeek-R1:
 # is DSA-sparse):
 #   - KV_BLOCK_SIZE=1        (DSA sparse indexer REQUIRES block-size 1; DS uses 16)
 #   - VLLM_ROCM_USE_AITER_MLA=1  (GLM MLA path ON via AITER sparse; DS sets 0)
-#   - eager BOTH roles       (DSA + cudagraph unproven; DS runs PIECEWISE decode)
+#   - prefill EAGER (NONE), decode PIECEWISE  (prefill cudagraph capture deadlocks
+#     on this stack; decode PIECEWISE captures cleanly on DSA and is a ~3.7x ITL win
+#     (validated: ~69ms vs ~264ms eager). Global VLLM_CUDAGRAPH_MODE=NONE as the
+#     safe floor; per-role PREFILL=NONE / DECODE=PIECEWISE override it.)
 # Note: block=1 + AITER_MLA=1 are ALREADY the moriio.sh connector defaults — GLM
 # keeps them; DeepSeek is the one that overrides them off. Set here explicitly so
 # the recipe is self-documenting and robust to connector default changes.
@@ -222,7 +225,7 @@ GLM-5.1-FP8:
     GPU_MEMORY_UTILIZATION: "0.80"
     VLLM_CUDAGRAPH_MODE: "NONE"
     PREFILL_CUDAGRAPH_MODE: "NONE"
-    DECODE_CUDAGRAPH_MODE: "NONE"
+    DECODE_CUDAGRAPH_MODE: "PIECEWISE"
     CUDAGRAPH_CAPTURE_SIZES: "1 2 4 8 16 32 64 128 256"
     VLLM_ALL2ALL_BACKEND: "mori_high_throughput"
     PREFILL_MORI_BACKEND: "mori_high_throughput"
