@@ -214,6 +214,17 @@ DeepSeek-R1:
 # connector's model_args. block-size / kv-cache-dtype / all2all / cudagraph come
 # from the env: recipe above (the connector emits them), so the dp: blocks are
 # empty like the DeepSeek family.
+#
+# LONG-CONTEXT CAVEAT (vLLM #40018): the ROCM_AITER_MLA_SPARSE prefill indexer
+# corrupts output for prompts beyond ~16-18k tokens on this image (mori v1.2.1) —
+# coherent + correct needle retrieval up to 14k, garbage (repetition collapse,
+# unique-ratio ~0.1) at ~18.7k. This is an UPSTREAM kernel bug, not the MAD port.
+# TESTED: pinning --max-model-len 32768 does NOT move the threshold (workspace is
+# sized max_model_len*40 but the corruption onset is a fixed ~18k token count in
+# the gather/logits kernel, not a buffer-scaling artifact). So no config knob
+# helps; it needs the complete upstream prefill fix in a newer image. Left at the
+# native max_model_len (do not cap — capping gives no accuracy benefit and only
+# limits usable context). Serve prompts <~14k for correct output on this image.
 GLM-5.1-FP8:
   env:
     VLLM_USE_V1: "1"
