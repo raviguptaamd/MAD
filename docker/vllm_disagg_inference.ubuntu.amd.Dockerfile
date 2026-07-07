@@ -172,7 +172,7 @@ RUN rm -rf /opt/vllm_cache/aiter_jit /root/.aiter && echo "cleared stale AITER J
 # VLLM_REPO/REF are a PUBLIC GitHub repo + branch (the Wide-EP WRITE-mode vLLM the
 # dist-inf-cookbook mori121 image builds from). Override to your own vLLM fork/branch.
 ARG VLLM_REPO=https://github.com/raviguptaamd/vllm.git
-ARG VLLM_REF=glm5.1-dsa-wideEP_on_shikpate_06_29_customer
+ARG VLLM_REF=glm5.1-dsa-wideEP_on_shik_latest
 ENV VLLM_TARGET_DEVICE=rocm \
     PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
     MAX_JOBS=${MAX_JOBS}
