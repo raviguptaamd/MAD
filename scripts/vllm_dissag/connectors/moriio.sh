@@ -137,6 +137,26 @@ connector_runtime_patch() {
     # code gaps, applied here as idempotent, anchor-based, self-skipping .py patchers
     # (they no-op cleanly if the fix is native/refactored on the chosen image). Gated
     # on MODEL_NAME so DeepSeek/other models are a pure no-op (byte-identical to before).
+    # MoRI library bump (opt-in): if a rebuilt MoRI package is staged at
+    # MORI_OVERLAY_DIR (default /shared_inference/$USER/mori_built/mori), overlay it
+    # over the image's stock MoRI BEFORE any mori import. The stock image ships MoRI
+    # v1.2.1 whose KV-transfer notify/mapping fails on large (>~8k) transfers
+    # (decode "unmap MISS" -> deferred-write expires 60s -> prefill EngineCore crash).
+    # Post-1.2.1 MoRI main carries the fixes (#424 notify SENDs, #436 large-transfer
+    # chunking, #432 RDMA resilience). Built from source against THIS image's libpci
+    # (nightly wheel is ABI-incompatible: needs LIBPCI_3.8, image has 3.7). Applies to
+    # ALL models (MoRI is model-agnostic), so this runs before the GLM gate.
+    _mori_overlay="${MORI_OVERLAY_DIR:-/shared_inference/${USER_NAME:-$USER}/mori_built/mori}"
+    if [ -d "${_mori_overlay}" ]; then
+        _mori_dst="$(python3 -c 'import mori,os;print(os.path.dirname(mori.__file__))' 2>/dev/null || true)"
+        if [ -n "${_mori_dst}" ] && [ -d "${_mori_dst}" ]; then
+            echo "[mori-bump] overlaying rebuilt MoRI from ${_mori_overlay} onto ${_mori_dst}"
+            rm -rf "${_mori_dst}" && cp -a "${_mori_overlay}" "${_mori_dst}" && \
+                echo "[mori-bump] now: $(python3 -c 'import mori;print(mori.__version__)' 2>&1 | tail -1)" || \
+                echo "[mori-bump] WARN: overlay failed; continuing with stock MoRI" >&2
+        fi
+    fi
+
     [ "${MODEL_NAME:-}" = "GLM-5.1-FP8" ] || return 0
     _glm_dsa_runtime_patch
 }
@@ -157,13 +177,19 @@ _glm_dsa_runtime_patch() {
     echo "[glm] MODEL_NAME=GLM-5.1-FP8: applying DSA runtime patchers against ${_vllm_dir}"
 
     # Ordered list of REQUIRED patchers (all abort on hard failure).
+    # GLM_PERSIST_GATE=0 skips the persistent-MLA accuracy gate (debug only: to test
+    # whether the non-persistent kernel it routes to is what crashes disagg at >=8k).
+    local _gate_patcher="apply_glm_dsa_persistent_kernel_gate_fix.py"
+    [ "${GLM_PERSIST_GATE:-1}" = "0" ] && _gate_patcher=""
     local _p
     for _p in \
         apply_glm_dsa_kernel_fix.py \
         apply_glm_dsa_moriio_dualkv_fix.py \
         apply_glm_dsa_moriio_engine_fix.py \
         apply_glm_dsa_moriio_gate_fix.py \
-        apply_glm_moriio_abort_guard_fix.py; do
+        apply_glm_moriio_abort_guard_fix.py \
+        ${_gate_patcher} \
+        apply_glm_aiter_sampling_oob_fix.py; do
         local _py="${_patch_dir}/${_p}"
         if [ ! -f "${_py}" ]; then
             echo "Error: [glm] required patcher ${_py} not found. Aborting." >&2
@@ -175,6 +201,18 @@ _glm_dsa_runtime_patch() {
             exit 1
         }
     done
+
+    # Optional DSA indexer boot-warmup (GLM_INDEXER_WARMUP=1). Force-compiles the DSA
+    # indexer kernels at boot so they never JIT mid-inference. Opt-in because it drives a
+    # large (>=8k) prefill forward at boot: on stacks where that forward faults it makes
+    # the fault DETERMINISTIC at boot (useful for debugging) rather than on first request.
+    if [ "${GLM_INDEXER_WARMUP:-0}" = "1" ]; then
+        local _warm="${_patch_dir}/apply_glm_dsa_indexer_warmup_fix.py"
+        if [ -f "${_warm}" ]; then
+            echo "[glm] applying DSA indexer boot-warmup (GLM_INDEXER_WARMUP=1)"
+            python3 "${_warm}" "${_vllm_dir}" 2>&1 || echo "Warning: [glm] indexer-warmup patch failed (non-fatal)."
+        fi
+    fi
 
     # Optional diagnostic instrumentation (GLM_INSTRUMENT=1). Non-fatal.
     if [ "${GLM_INSTRUMENT:-0}" = "1" ]; then
