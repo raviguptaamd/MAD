@@ -167,6 +167,15 @@ connector_runtime_patch() {
 # failing at launch is correct). Patchers self-skip (rc 0) when their anchor is
 # absent, so an image that already carries or refactored a fix no-ops cleanly.
 _glm_dsa_runtime_patch() {
+    # GLM_SKIP_PATCHERS=1: the serving image already carries the GLM-5.1 DSA fixes
+    # in-source (e.g. the #47766 stack image built from raviguptaamd/vllm@
+    # glm5.1-dsa-wideEP_on_shikpate_06_29_customer). Skip ALL runtime patchers — they
+    # are redundant, and the persistent-gate/sampling-overlay patchers would actively
+    # REGRESS a baked image (turn persistent MLA off / overwrite stock aiter kernels).
+    if [ "${GLM_SKIP_PATCHERS:-0}" = "1" ]; then
+        echo "[glm] GLM_SKIP_PATCHERS=1: image carries DSA fixes in-source; skipping runtime patchers."
+        return 0
+    fi
     local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
     local _vllm_dir
     _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
