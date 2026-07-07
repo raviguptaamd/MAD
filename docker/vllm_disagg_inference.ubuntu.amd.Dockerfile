@@ -51,7 +51,8 @@
 #
 #   - BASE: rocm/vllm-dev:ci_base-0fcd9b99... (open ROCm 7.2 / cp312 CI base).
 #   - MoRI  -> built from ROCm/MoRI @ v1.2.1 (BUILD_UMBP=OFF).
-#   - AITER -> 0.1.16.post3 prebuilt rocm7.2 wheel + flydsl 0.2.2; stale JIT wiped.
+#   - AITER -> STOCK ROCm/aiter @ e03fa6040 compiled from source + flydsl 0.1.7-0.1.9;
+#     stale JIT wiped. (#47766 keeps persistent MLA ON -> aiter native gqa64 fold.)
 #   - vLLM  -> COMPILED from shikamd123/vllm @
 #     vllm_2p2d_wide-ep_write_shikpate_test_06_29_customer (Wide-EP multi-pod PD, the
 #     connector/router reference for the 2P2D DP=EP=16 topology). Full compile: it is
@@ -193,7 +194,10 @@ def get(names):
         except PackageNotFoundError: pass
     return None
 av = get(("amd-aiter", "amd_aiter", "aiter"))
-assert av and av.split("+", 1)[0] == "0.1.16.post3", f"AITER downgraded: {av!r}"
+# Stock source build of ROCm/aiter@e03fa6040 reports 0.1.17.dev195+ge03fa6040.
+# Verify the aiter install survived the vLLM install (present + carries the e03fa6040
+# commit tag) rather than pinning a release version string.
+assert av and "e03fa6040" in av, f"AITER missing/downgraded (want e03fa6040 build): {av!r}"
 import mori, mori.io, mori.ops
 print("Post-vLLM check OK: AITER", av, "+ MoRI importable")
 PYEOF
