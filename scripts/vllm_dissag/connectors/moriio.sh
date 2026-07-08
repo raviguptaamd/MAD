@@ -137,26 +137,9 @@ connector_runtime_patch() {
     # code gaps, applied here as idempotent, anchor-based, self-skipping .py patchers
     # (they no-op cleanly if the fix is native/refactored on the chosen image). Gated
     # on MODEL_NAME so DeepSeek/other models are a pure no-op (byte-identical to before).
-    # MoRI library bump (opt-in): if a rebuilt MoRI package is staged at
-    # MORI_OVERLAY_DIR (default /shared_inference/$USER/mori_built/mori), overlay it
-    # over the image's stock MoRI BEFORE any mori import. The stock image ships MoRI
-    # v1.2.1 whose KV-transfer notify/mapping fails on large (>~8k) transfers
-    # (decode "unmap MISS" -> deferred-write expires 60s -> prefill EngineCore crash).
-    # Post-1.2.1 MoRI main carries the fixes (#424 notify SENDs, #436 large-transfer
-    # chunking, #432 RDMA resilience). Built from source against THIS image's libpci
-    # (nightly wheel is ABI-incompatible: needs LIBPCI_3.8, image has 3.7). Applies to
-    # ALL models (MoRI is model-agnostic), so this runs before the GLM gate.
-    _mori_overlay="${MORI_OVERLAY_DIR:-/shared_inference/${USER_NAME:-$USER}/mori_built/mori}"
-    if [ -d "${_mori_overlay}" ]; then
-        _mori_dst="$(python3 -c 'import mori,os;print(os.path.dirname(mori.__file__))' 2>/dev/null || true)"
-        if [ -n "${_mori_dst}" ] && [ -d "${_mori_dst}" ]; then
-            echo "[mori-bump] overlaying rebuilt MoRI from ${_mori_overlay} onto ${_mori_dst}"
-            rm -rf "${_mori_dst}" && cp -a "${_mori_overlay}" "${_mori_dst}" && \
-                echo "[mori-bump] now: $(python3 -c 'import mori;print(mori.__version__)' 2>&1 | tail -1)" || \
-                echo "[mori-bump] WARN: overlay failed; continuing with stock MoRI" >&2
-        fi
-    fi
-
+    # The MoRI version is pinned by the Dockerfile MORI_REF (post-1.2.1 main with the
+    # large-transfer notify/mapping fixes #424/#436/#432 baked in); if a newer MoRI is
+    # needed, update MORI_REF and rebuild the image — no runtime library swap here.
     [ "${MODEL_NAME:-}" = "GLM-5.1-FP8" ] || return 0
     _glm_dsa_runtime_patch
 }

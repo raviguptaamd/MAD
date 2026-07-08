@@ -25,24 +25,33 @@
 #
 #################################################################################
 # =============================================================================
-# vllm_disagg_inference.ubuntu.amd.Dockerfile
+# vllm_disagg_inference.glmv5.1.ubuntu.amd.Dockerfile
+#   GLM-5.1-FP8 (MLA + DeepSeek Sparse Attention) MoRI-EP WideEP disagg image.
+#   PER-MODEL image, isolated from the base vllm_disagg_inference Dockerfile
+#   (which stays pinned to the DeepSeek-V3 / R1 stack). This split lets each model
+#   pin its own vLLM/AITER/MoRI without disturbing the others -- add a new
+#   vllm_disagg_inference.<model>.ubuntu.amd.Dockerfile per future model
+#   (e.g. Kimi-2.6) rather than repinning the shared DSV3 image.
+#
 #   ALL connectors in one image: moriio (TP + MoRI-EP wideEP) + rixl (NIXL TP +
 #   DeepEP wideEP). = the fullsource MoRI stack, plus a UCX/RIXL/rocSHMEM/DeepEP
 #   transport layer gated by --build-arg WITH_NIXL (default 1 = everything).
 #
-#   docker build -f docker/vllm_disagg_inference.ubuntu.amd.Dockerfile \
-#     -t <your-registry>/vllm-disagg:local .
-#   export DOCKER_IMAGE_NAME=<your-registry>/vllm-disagg:local
+#   docker build -f docker/vllm_disagg_inference.glmv5.1.ubuntu.amd.Dockerfile \
+#     -t <your-registry>/vllm-disagg:glmv5.1 .
+#   export DOCKER_IMAGE_NAME=<your-registry>/vllm-disagg:glmv5.1
 #
 #   WITH_NIXL=1 (default) => builds UCX + RIXL(+nixlbench) + rocSHMEM + DeepEP from
 #     source, so all four connector combos (moriio TP/wideEP, rixl NIXL TP, DeepEP
 #     wideEP) are present (~+30-45 min build vs WITH_NIXL=0).
 #   WITH_NIXL=0 => MoRI-EP only (moriio TP/wideEP + deepep-from-base); lean, faster.
 #
-# STATUS: built + validated on ci_base (WITH_NIXL=1). The moriio paths (TP + MoRI-EP
-# wideEP, incl. full DeepSeek-V3) are live-proven. rixl+TP builds and NIXL initializes,
-# but has an image-level PyNCCL all-reduce issue on this stack (tracked separately).
-# (BASE_IMAGE is a gated nightly; override --build-arg BASE_IMAGE=... as needed.)
+# STATUS (GLM-5.1-FP8 on this stack): 1P/1D EP8 + 2P/2D EP16 NIAH 2k-35k = 10/10,
+# no crash; long-context accuracy fixed via vLLM #47766 (persistent sparse-MLA kept
+# ON). 4P/4D EP32 is a KNOWN OPEN DEFECT: token corruption at ALL context lengths
+# (garbage output even at 2k), distinct from the long-context bug; prime suspect is
+# the moriep all-to-all combine at EP32 scale -> deferred to future work. Use 1P/1D
+# and 2P/2D only. (BASE_IMAGE is a gated nightly; override --build-arg BASE_IMAGE=...)
 # =============================================================================
 # Reconstructs the validated v1.2.1 (mori121) runtime stack by applying the recipe's
 # component pins ON TOP of the open ROCm vLLM ci_base, cloning each source from
@@ -51,7 +60,8 @@
 #
 #   - BASE: rocm/vllm-dev:ci_base-0fcd9b99... (open ROCm 7.2 / cp312 CI base).
 #   - MoRI  -> built from ROCm/MoRI @ v1.2.1 (BUILD_UMBP=OFF).
-#   - AITER -> 0.1.16.post3 prebuilt rocm7.2 wheel + flydsl 0.2.2; stale JIT wiped.
+#   - AITER -> STOCK ROCm/aiter @ e03fa6040 compiled from source + flydsl 0.1.7-0.1.9;
+#     stale JIT wiped. (#47766 keeps persistent MLA ON -> aiter native gqa64 fold.)
 #   - vLLM  -> COMPILED from shikamd123/vllm @
 #     vllm_2p2d_wide-ep_write_shikpate_test_06_29_customer (Wide-EP multi-pod PD, the
 #     connector/router reference for the 2P2D DP=EP=16 topology). Full compile: it is
@@ -99,7 +109,9 @@ ARG NIC_COMPILATION_ARCH="cx7"
 #    backends produced a MoRI that deadlocked at the cross-node EP all-to-all init.
 # -----------------------------------------------------------------------------
 ARG MORI_REPO=https://github.com/ROCm/mori.git
-ARG MORI_REF=v1.2.1
+# 42e895472b08: MoRI main tip past v1.2.1, validated by MAD-private #338 for GLM-5.1
+# DSA WideEP disagg (v1.2.1 large-transfer notify path was insufficient at high EP).
+ARG MORI_REF=42e895472b08
 ENV MORI_GPU_ARCHS=gfx942
 # Newer MoRI added the UMBP subsystem which requires gRPC (grpcpp/grpcpp.h) not
 # present in this base; UMBP is unrelated to the EP dispatch/combine kernels, so
@@ -123,29 +135,40 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null || true && \
     rm -rf /tmp/mori-src
 
 # -----------------------------------------------------------------------------
-# 2. AITER: install 0.1.16.post3 (prebuilt rocm7.2 wheel + flydsl 0.2.2), then
-#    invalidate the stale prewarmed AITER JIT cache compiled against the old .so.
+# 2. AITER: build STOCK upstream ROCm/aiter @ e03fa6040 from source (NO fork,
+#    NO gqa64-fold patch). Under vLLM #47766 the sparse-MLA persistent path stays
+#    ON, so GLM's gqa=64 decode hits aiter's PRE-EXISTING persistent gqa64->16 fold
+#    (aiter/mla.py: `nhead in range(32,128+1,16) and persistent_mode`); the fork's
+#    extra non-persistent fold is never exercised, so stock is sufficient.
+#    Validated by MAD-private #338: 1P/1D EP8 + 2P/2D EP16 NIAH PASS on this exact
+#    aiter tip under #47766. Pin the exact commit (the one tested), not the release
+#    wheel. Then invalidate the stale prewarmed JIT cache compiled against the old .so.
 # -----------------------------------------------------------------------------
-ARG AITER_VERSION=0.1.16.post3
-ARG AITER_WHEEL_URL="https://github.com/ROCm/aiter/releases/download/v0.1.16.post3/amd_aiter-0.1.16.post3%2Brocm7.2.manylinux.2.28-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
-RUN echo "Bumping AITER to ${AITER_VERSION} from ${AITER_WHEEL_URL}" && \
-    _W="/tmp/$(basename "${AITER_WHEEL_URL}" | sed 's/%2B/+/g')" && \
-    curl -fL --retry 3 --retry-delay 2 -o "${_W}" "${AITER_WHEEL_URL}" && \
+ARG AITER_REPO=https://github.com/ROCm/aiter.git
+ARG AITER_REF=e03fa6040
+RUN echo "Compiling STOCK AITER (no fork) from ${AITER_REPO}@${AITER_REF}" && \
+    rm -rf /tmp/aiter-src && \
+    git clone --recursive "${AITER_REPO}" /tmp/aiter-src && \
+    cd /tmp/aiter-src && git checkout "${AITER_REF}" && \
+    git submodule update --init --recursive && \
     (pip uninstall -y amd_aiter amd-aiter aiter 2>/dev/null || true) && \
-    pip install --no-deps "${_W}" && \
-    pip install "flydsl==0.2.2" && \
-    rm -f "${_W}" && \
+    pip install --no-build-isolation --no-deps -v . && \
+    pip install --no-deps -U "flydsl>=0.1.7,<0.1.9" && \
+    echo "AITER_REF=${AITER_REF}@$(git rev-parse HEAD) (stock ROCm/aiter, no fork)" >> /app/versions.txt && \
+    rm -rf /tmp/aiter-src && \
     python3 - <<'PYEOF'
-from importlib.metadata import version as v, PackageNotFoundError
-vm = None
-for n in ("amd-aiter", "amd_aiter", "aiter"):
-    try: vm = v(n); break
-    except PackageNotFoundError: pass
-assert vm and vm.split("+", 1)[0] == "0.1.16.post3", f"AITER not 0.1.16.post3: {vm!r}"
-print("AITER OK:", vm)
+# Verify aiter/mla.py installed + has the persistent gqa64 fold, WITHOUT importing
+# aiter/torch (torch->amdsmi->libamd_smi.so is not loadable at build: no GPU in sandbox).
+import glob, pathlib
+cands = glob.glob("/usr/local/lib/python*/dist-packages/aiter/mla.py") + \
+        glob.glob("/usr/lib/python*/dist-packages/aiter/mla.py")
+assert cands, "aiter/mla.py not found in site-packages after install"
+src = pathlib.Path(cands[0]).read_text()
+assert "persistent_mode" in src, f"AITER persistent fold path MISSING in {cands[0]}"
+print("STOCK AITER OK (persistent gqa64 fold path present):", cands[0])
 PYEOF
 RUN rm -rf /opt/vllm_cache/aiter_jit /root/.aiter && echo "cleared stale AITER JIT cache" && \
-    echo "AITER_VERSION=${AITER_VERSION}" >> /app/versions.txt
+    echo "AITER_REF=${AITER_REF} (stock)" >> /app/versions.txt
 
 # -----------------------------------------------------------------------------
 # 3. vLLM: compile from source at the 06_29 validated Wide-EP WRITE-mode branch
@@ -157,8 +180,8 @@ RUN rm -rf /opt/vllm_cache/aiter_jit /root/.aiter && echo "cleared stale AITER J
 # -----------------------------------------------------------------------------
 # VLLM_REPO/REF are a PUBLIC GitHub repo + branch (the Wide-EP WRITE-mode vLLM the
 # dist-inf-cookbook mori121 image builds from). Override to your own vLLM fork/branch.
-ARG VLLM_REPO=https://github.com/shikamd123/vllm.git
-ARG VLLM_REF=vllm_2p2d_wide-ep_write_shikpate_test_06_29_customer
+ARG VLLM_REPO=https://github.com/raviguptaamd/vllm.git
+ARG VLLM_REF=glm5.1-dsa-wideEP_on_shik_latest
 ENV VLLM_TARGET_DEVICE=rocm \
     PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
     MAX_JOBS=${MAX_JOBS}
@@ -180,7 +203,10 @@ def get(names):
         except PackageNotFoundError: pass
     return None
 av = get(("amd-aiter", "amd_aiter", "aiter"))
-assert av and av.split("+", 1)[0] == "0.1.16.post3", f"AITER downgraded: {av!r}"
+# Stock source build of ROCm/aiter@e03fa6040 reports 0.1.17.dev195+ge03fa6040.
+# Verify the aiter install survived the vLLM install (present + carries the e03fa6040
+# commit tag) rather than pinning a release version string.
+assert av and "e03fa6040" in av, f"AITER missing/downgraded (want e03fa6040 build): {av!r}"
 import mori, mori.io, mori.ops
 print("Post-vLLM check OK: AITER", av, "+ MoRI importable")
 PYEOF
