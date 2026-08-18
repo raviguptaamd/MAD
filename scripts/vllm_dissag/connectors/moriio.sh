@@ -141,7 +141,32 @@ connector_runtime_patch() {
     # large-transfer notify/mapping fixes #424/#436/#432 baked in); if a newer MoRI is
     # needed, update MORI_REF and rebuild the image — no runtime library swap here.
     [ "${MODEL_NAME:-}" = "GLM-5.1-FP8" ] || return 0
+    # Wei Sun original topk_ids (e25bf182). EP32 combine() was gathering with
+    # dispatched ids -> 4P/4D garbage. Not in the baked DSA image, so this runs
+    # even when GLM_SKIP_PATCHERS=1. Does not change vllm serve argv.
+    _mori_combine_original_topk_fix
     _glm_dsa_runtime_patch
+}
+
+# MoRI combine() original topk_ids — Wei Sun e25bf182. All GLM MoE EP.
+_mori_combine_original_topk_fix() {
+    local _patch_dir="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
+    local _py="${_patch_dir}/apply_mori_combine_original_topk_fix.py"
+    if [ ! -f "${_py}" ]; then
+        echo "Error: [mori-combine] ${_py} not found. Aborting." >&2
+        exit 1
+    fi
+    local _vllm_dir
+    _vllm_dir="$(python3 -c 'import vllm, os; print(os.path.dirname(vllm.__file__))' 2>/dev/null || true)"
+    if [ -z "${_vllm_dir}" ] || [ ! -d "${_vllm_dir}" ]; then
+        echo "Error: [mori-combine] cannot locate vLLM install dir. Aborting." >&2
+        exit 1
+    fi
+    echo "[mori-combine] applying ${_py} against ${_vllm_dir}"
+    python3 "${_py}" "${_vllm_dir}" 2>&1 || {
+        echo "Error: [mori-combine] patch failed — EP32 would emit garbage. Aborting." >&2
+        exit 1
+    }
 }
 
 # GLM-5.1 DSA patchers (see connector_runtime_patch). Ported from MAD-private #338.

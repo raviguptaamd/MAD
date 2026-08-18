@@ -234,8 +234,9 @@ lengths and the model is scored on how many it retrieves. Select it in place of 
 sweep via the launcher's benchmark hook:
 
 ```bash
-export BENCHMARK_SCRIPT_FILE=benchmark_niah.sh
-export NIAH_WORDS="2000,8000,20000,35000"     # context sizes (words); optional
+export BENCHMARK_SCRIPT=niah
+export NIAH_WORDS="2000,8000,16000,20000,28000,35000"
+export NIAH_SEEDS=0
 ```
 
 Or run `benchmark_niah.py` standalone against any live OpenAI-compatible endpoint

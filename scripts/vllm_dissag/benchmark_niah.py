@@ -11,13 +11,16 @@
 #   NIAH_SEEDS   comma list of needle-layout seeds (default 0,1,2); summary reports
 #                mean/min/max across seeds to separate real accuracy from variance
 #   NIAH_TIMEOUT per-request timeout seconds (default 1800)
-#   NIAH_WARMUP  1 (default) = send one throwaway request per context length BEFORE
-#                scoring, so the first-hit JIT/kernel-autotune compile happens outside
-#                the scored/gated window. On a freshly-booted node the first request of
-#                a shape can take minutes to compile; without warmup that lands on the
-#                first scored request -> false 0/10 or timeout. Warmup failures are
-#                tolerated (logged, not fatal). Set 0 to disable.
-import os, sys, json, random, urllib.request
+#   NIAH_WARMUP  1 (default) = for each length, one throwaway request THEN the scored
+#                request (warmup N → score N). Do not warm 16k–35k before scoring 2k:
+#                a later EngineCore 500 makes earlier lengths look like found=0/10.
+#                Set 0 to disable warmup. NIAH_HALT_ON_FAIL=1 stops the ladder after a
+#                warmup/score timeout so a dead engine does not keep printing 0/10.
+#   NIAH_PAIR_SLEEP_S          seconds after finishing a length before the next pair
+#                              (default 30). 0 disables.
+#   NIAH_WARMUP_SCORE_SLEEP_S  seconds between warmup ok and the scored request
+#                              (default 5). 0 disables.
+import os, sys, json, random, time, urllib.request
 
 URL = os.environ.get("NIAH_URL", "http://127.0.0.1:30000/v1/chat/completions")
 MODEL = os.environ.get("NIAH_MODEL", "")
@@ -29,8 +32,10 @@ TIMEOUT = float(os.environ.get("NIAH_TIMEOUT", "1800"))
 # variance; the summary reports mean/min/max across seeds. Default 0,1,2.
 SEEDS = [int(x) for x in os.environ.get("NIAH_SEEDS", "0,1,2").split(",") if x.strip()]
 WARMUP = os.environ.get("NIAH_WARMUP", "1") == "1"
-# Warmup uses a generous timeout (cold compile of a long-context shape can take minutes)
-# and never fails the run — its only job is to trigger compilation before scoring.
+HALT_ON_FAIL = os.environ.get("NIAH_HALT_ON_FAIL", "1") == "1"
+PAIR_SLEEP = float(os.environ.get("NIAH_PAIR_SLEEP_S", "30"))
+WARMUP_SCORE_SLEEP = float(os.environ.get("NIAH_WARMUP_SCORE_SLEEP_S", "5"))
+# Warmup uses a generous timeout (cold compile of a long-context shape can take minutes).
 WARMUP_TIMEOUT = max(TIMEOUT, 1800.0)
 
 FILLER = (
@@ -83,12 +88,11 @@ def _request(n_words, seed, max_tokens, timeout):
 
 
 def warmup(n_words):
-    """One throwaway request per length so first-hit compile happens off the scored path.
-    Never fatal: a warmup timeout just means the shape is still compiling; the scored
-    request will pay whatever remains (bounded by NIAH_TIMEOUT)."""
+    """Throwaway request for this length only. Returns True on HTTP success."""
     _, err = _request(n_words, seed=0, max_tokens=8, timeout=WARMUP_TIMEOUT)
     status = "ok" if err is None else ("timeout/err: %s" % err)
     print("words=%6d  [warmup] %s" % (n_words, status), flush=True)
+    return err is None
 
 
 def run(n_words, seed=0):
@@ -112,16 +116,46 @@ def main():
         print("NIAH_MODEL must be set (the served model path/name)", file=sys.stderr)
         sys.exit(2)
     print("=== NIAH retrieval test ===", flush=True)
-    print("url=%s  model=%s  sizes=%s  seeds=%s  warmup=%s" % (URL, MODEL, WORDS, SEEDS, WARMUP), flush=True)
-    # Warmup pass: compile every shape once before scoring, so cold JIT never lands on a
-    # scored/gated request (the common cause of false 0/10 or timeout on a fresh boot).
-    if WARMUP:
-        print("=== NIAH warmup (one throwaway request per length) ===", flush=True)
-        for n in WORDS:
-            warmup(n)
-    results = {}  # n_words -> list of scores across seeds (None = timeout/error, not a wrong answer)
-    for n in WORDS:
+    print("url=%s  model=%s  sizes=%s  seeds=%s  warmup=%s halt_on_fail=%s "
+          "pair_sleep=%.0fs warmup_score_sleep=%.0fs"
+          % (URL, MODEL, WORDS, SEEDS, WARMUP, HALT_ON_FAIL, PAIR_SLEEP, WARMUP_SCORE_SLEEP),
+          flush=True)
+    # Pair each length: warmup N then score N. Warm-all-then-score-all lets a later
+    # EngineCore 500 make earlier lengths look like found=0/10.
+    results = {}  # n_words -> list of scores across seeds (None = timeout/error)
+    halted = False
+    for i, n in enumerate(WORDS):
+        if halted:
+            results[n] = [None] * len(SEEDS)
+            print("words=%6d  SKIP (ladder halted)" % n, flush=True)
+            continue
+        if i > 0 and PAIR_SLEEP > 0:
+            print(
+                "[niah] sleep %.0fs between pairs (after words=%d, before words=%d)"
+                % (PAIR_SLEEP, WORDS[i - 1], n),
+                flush=True,
+            )
+            time.sleep(PAIR_SLEEP)
+        if WARMUP:
+            print("=== pair words=%d (warmup then score) ===" % n, flush=True)
+            if not warmup(n):
+                results[n] = [None] * len(SEEDS)
+                print("words=%6d  SKIP score (warmup failed)" % n, flush=True)
+                if HALT_ON_FAIL:
+                    print("NIAH_HALT_ON_FAIL=1 — stopping remaining lengths", flush=True)
+                    halted = True
+                continue
+            if WARMUP_SCORE_SLEEP > 0:
+                print(
+                    "[niah] sleep %.0fs between warmup and score words=%d"
+                    % (WARMUP_SCORE_SLEEP, n),
+                    flush=True,
+                )
+                time.sleep(WARMUP_SCORE_SLEEP)
         results[n] = [run(n, s) for s in SEEDS]
+        if HALT_ON_FAIL and all(v is None for v in results[n]):
+            print("NIAH_HALT_ON_FAIL=1 — stopping remaining lengths (score failed)", flush=True)
+            halted = True
     print("=== NIAH summary (mean/min/max across %d seed(s)) ===" % len(SEEDS), flush=True)
     for n in WORDS:
         scored = results[n]
