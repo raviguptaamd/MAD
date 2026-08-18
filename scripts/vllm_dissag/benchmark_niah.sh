@@ -29,14 +29,17 @@ done
 [ "$_ready" = 1 ] || echo "[niah] WARN: router readiness not confirmed in 300s; proceeding (warmup will absorb)"
 
 # The server registers the model under its path (served_model_name = MODEL_PATH).
-# NIAH_WARMUP=1 (harness default): first-hit JIT compiles off the scored path so a cold
-# boot does not produce false 0/10 or timeouts on the first scored request.
+# Pairing (warmup N → score N) lives in benchmark_niah.py. Chat POSTs unchanged.
 NIAH_URL="http://127.0.0.1:${BENCHMARK_PORT}/v1/chat/completions" \
 NIAH_MODEL="${MODEL_PATH}" \
 NIAH_WORDS="${NIAH_WORDS:-2000,8000,20000,35000}" \
+NIAH_SEEDS="${NIAH_SEEDS:-0}" \
 NIAH_MAXTOK="${NIAH_MAXTOK:-2048}" \
 NIAH_TIMEOUT="${NIAH_TIMEOUT:-1800}" \
 NIAH_WARMUP="${NIAH_WARMUP:-1}" \
+NIAH_HALT_ON_FAIL="${NIAH_HALT_ON_FAIL:-0}" \
+NIAH_PAIR_SLEEP_S="${NIAH_PAIR_SLEEP_S:-30}" \
+NIAH_WARMUP_SCORE_SLEEP_S="${NIAH_WARMUP_SCORE_SLEEP_S:-5}" \
   python3 "${DIR}/benchmark_niah.py" 2>&1 | tee -a "${LOG}"
 
 echo "NIAH results -> ${LOG}"
