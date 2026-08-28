@@ -33,18 +33,30 @@
 #   vllm_disagg_inference.<model>.ubuntu.amd.Dockerfile per future model
 #   (e.g. Kimi-2.6) rather than repinning the shared DSV3 image.
 #
-#   ALL connectors in one image: moriio (TP + MoRI-EP wideEP) + rixl (NIXL TP +
-#   DeepEP wideEP). = the fullsource MoRI stack, plus a UCX/RIXL/rocSHMEM/DeepEP
-#   transport layer gated by --build-arg WITH_NIXL (default 1 = everything).
+#   ALSO SERVES GLM-5.2. GLM-5.2-FP8 and GLM-5.2-MXFP4 are architecturally identical
+#   to 5.1 (verified by diffing config.json -- see models.yaml "GLM-5.2 == GLM-5.1
+#   architecturally"), so they run on this image unchanged. The filename is kept at
+#   glmv5.1 because the PIN SET is what the file names, and the pin set is shared;
+#   forking a byte-identical glmv5.2 file would create two things to keep in sync.
+#   Tag the 5.2 build distinctly (recipe uses :glm52-gfx950-ionic).
+#
+#   Connectors: moriio (TP + MoRI-EP wideEP) is always built. The rixl path (NIXL TP
+#   + DeepEP wideEP) is gated by --build-arg WITH_NIXL, DEFAULT 0 -- see the ARG at
+#   the "1. MoRI" section for why.
 #
 #   docker build -f docker/vllm_disagg_inference.glmv5.1.ubuntu.amd.Dockerfile \
-#     -t <your-registry>/vllm-disagg:glmv5.1 .
-#   export DOCKER_IMAGE_NAME=<your-registry>/vllm-disagg:glmv5.1
+#     -t <your-registry>/vllm-disagg:glm52-gfx950-ionic .
+#   export DOCKER_IMAGE_NAME=<your-registry>/vllm-disagg:glm52-gfx950-ionic
 #
-#   WITH_NIXL=1 (default) => builds UCX + RIXL(+nixlbench) + rocSHMEM + DeepEP from
-#     source, so all four connector combos (moriio TP/wideEP, rixl NIXL TP, DeepEP
-#     wideEP) are present (~+30-45 min build vs WITH_NIXL=0).
-#   WITH_NIXL=0 => MoRI-EP only (moriio TP/wideEP + deepep-from-base); lean, faster.
+#   WITH_NIXL=0 (DEFAULT) => MoRI-EP only (moriio TP/wideEP + deepep-from-base);
+#     lean, and exactly how the validated image was built. This recipe serves over
+#     MoRI-EP + MoRI-IO, so UCX/RIXL/rocSHMEM/DeepEP is dead weight.
+#   WITH_NIXL=1 => additionally builds UCX + RIXL(+nixlbench) + rocSHMEM + DeepEP
+#     from source, so all four connector combos are present (~+30-45 min build).
+#
+# TARGET HARDWARE: MI355X (gfx950) + Pensando Ionic AI NIC. Set by
+# GFX_COMPILATION_ARCH / BUILD_ROCM_ARCH / MORI_GPU_ARCHS / NIC_COMPILATION_ARCH /
+# MORI_DEVICE_NIC below. For MI300X rebuild with gfx942 + cx7 on all five.
 #
 # STATUS (GLM-5.1-FP8 on this stack): 1P/1D EP8 + 2P/2D EP16 NIAH 2k-35k = 10/10,
 # no crash; long-context accuracy fixed via vLLM #47766 (persistent sparse-MLA kept
@@ -52,20 +64,35 @@
 # (garbage output even at 2k), distinct from the long-context bug; prime suspect is
 # the moriep all-to-all combine at EP32 scale -> deferred to future work. Use 1P/1D
 # and 2P/2D only. (BASE_IMAGE is a gated nightly; override --build-arg BASE_IMAGE=...)
+#
+# STATUS (GLM-5.2-FP8 on this stack, MI355X 1P/1D EP8, job 5968): boots and serves.
+# NIAH ladder 8k/32k/64k/131k/262k PASSES at >=8.0/10 per rung with no length trend.
+# CAVEAT: retrieval is NOT reproducible across engine boots at temperature 0 -- the
+# same ladder, same seeds, same config scored 7.3/10 and 9.3/10 at 262k on two
+# consecutive boots. Byte-identical prompts, so this is engine-side (suspects:
+# chunked-prefill split under different batch composition, MoE routing varying with
+# batch, FP8 accumulation order vs CUDA-graph capture bucket). Treat any single NIAH
+# run as +/-1 needle. GLM-5.2-MXFP4 is config-only and has NEVER been booted.
+# See scripts/vllm_dissag/GLM52_MI355X.md for the serving recipe and measured perf.
 # =============================================================================
 # Builds the GLM-5.1 runtime stack by applying component pins ON TOP of a
 # purpose-built ROCm/vLLM/MoRI base, cloning each overridden source from public Git
 # (no local build-contexts):
 #
-#   - BASE: rocmshared/pytorch-private:vllm-rocm_07_22_2026_shikpate_mori1.2.3
-#     (ROCm + torch + a bundled vLLM/MoRI 1.2.3 stack). The stages below deliberately
-#     OVERRIDE the base's vLLM/MoRI/AITER with the pins we validate for GLM DSA.
+#   - BASE: rocm/vllm-dev:ci_base-dedbf6be8b1afa17a6220473b9c8c98242ac1c03
+#     (ROCm + torch + a bundled vLLM/MoRI stack; see ARG BASE_IMAGE for the value in
+#     force). The stages below deliberately OVERRIDE the base's vLLM/MoRI/AITER with
+#     the pins we validate for GLM DSA.
+#     NOTE: the base exports PYTORCH_ROCM_ARCH and MAX_JOBS as ENV. An inherited ENV
+#     beats a same-named ARG, so this file uses BUILD_ROCM_ARCH / BUILD_MAX_JOBS and
+#     assigns them through. Do NOT rename them back -- that silently built gfx90a;
+#     gfx942;gfx950 while claiming gfx950 (fixed in 0f660fe).
 #   - MoRI  -> built from ROCm/MoRI @ 42e895472b08 (validated for GLM DSA, BUILD_UMBP=OFF).
 #     (main LATEST 120d2de broke the connector KV-notify handshake -- see note at MORI_REF.)
-#   - AITER -> STOCK ROCm/aiter @ e03fa6040 compiled from source + flydsl 0.1.7-0.1.9;
+#   - AITER -> STOCK ROCm/aiter @ e03fa6040 compiled from source + flydsl >=0.1.7,<0.1.9;
 #     stale JIT wiped. (#47766 keeps persistent MLA ON -> aiter native gqa64 fold.)
-#   - vLLM  -> COMPILED from raviguptaamd/vllm @ glm5.1-dsa-wideEP_on_shik_0721
-#     (Shiksha 7/21 WideEP base + GLM DSA edits + sparse-MLA guard fix). Full compile:
+#   - vLLM  -> COMPILED from raviguptaamd/vllm @ glm5.1-dsa-wideEP_on_vllm-v0.27
+#     (vLLM v0.27 WideEP base + GLM DSA edits + sparse-MLA guard fix). Full compile:
 #     a different commit than the base's, so a .py-only overlay would be ABI-mismatched.
 #   - RDMA fix (expandable_segments:False x2 + HSA_ENABLE_IPC_MODE_LEGACY=0) is NOT baked
 #     here — it lives in scripts/vllm_dissag/connectors/<connector>.env and the launcher
@@ -89,27 +116,27 @@ FROM ${BASE_IMAGE}
 ENTRYPOINT []
 WORKDIR /app
 
-ARG GFX_COMPILATION_ARCH="gfx942"
-ARG PYTORCH_ROCM_ARCH="gfx942"
-ARG MAX_JOBS=32
+ARG GFX_COMPILATION_ARCH="gfx950"
+ARG BUILD_ROCM_ARCH="gfx950"
+ARG BUILD_MAX_JOBS=32
 # NIXL/RIXL transport for the rixl connector. GLM-5.1 is served over MoRI-EP + MoRI-IO,
 # so the UCX/RIXL/rocSHMEM/DeepEP stack is dead weight here: it lengthens the build and
 # ships transports this recipe never selects. Default 0 => lean MoRI-EP-only image, which
 # is also exactly how the validated image (glm5.1-vllm027-b8) was built. Set
 # --build-arg WITH_NIXL=1 only if you need the rixl connector from this same Dockerfile.
 ARG WITH_NIXL=0
-ARG NIC_COMPILATION_ARCH="cx7"
+ARG NIC_COMPILATION_ARCH="ionic"
 
 # -----------------------------------------------------------------------------
-# 1. MoRI: replace the base's bundled MoRI with the validated ROCm/MoRI @ v1.2.1
-#    (the version for the 06_29 mori121 image, dist-inf-cookbook
-#    Dockerfile.vllm.mori121_shareable). v1.2.1 carries the EP/RDMA correctness fixes
-#    plus the ROCm-7.2.3 dmabuf registration path used by the connector .env
-#    (expandable_segments:False). MoRI is JIT-built, so this swaps the JIT sources the
-#    kernels compile from at runtime.
-#    BUILD CONFIG: match the cookbook build — MORI_GPU_ARCHS=gfx942, BUILD_UMBP=OFF,
-#    DEFAULT NIC backends. Do NOT pass USE_IONIC=OFF / USE_BNXT=OFF: disabling NIC
-#    backends produced a MoRI that deadlocked at the cross-node EP all-to-all init.
+# 1. MoRI: replace the base's bundled MoRI with the pinned ROCm/MoRI @ MORI_REF below.
+#    It carries the EP/RDMA correctness fixes plus the ROCm-7.2.3 dmabuf registration
+#    path used by the connector .env (expandable_segments:False). MoRI is JIT-built, so
+#    this swaps the JIT sources the kernels compile from at runtime.
+#    BUILD CONFIG: MORI_GPU_ARCHS=gfx950 (MI355X) and MORI_DEVICE_NIC=ionic, set as ENV
+#    below -- read those, not this comment. (This block used to say gfx942, left over
+#    from the MI300X original; 0f660fe moved the build to gfx950 and missed the text.)
+#    BUILD_UMBP=OFF. Do NOT pass USE_IONIC=OFF / USE_BNXT=OFF: disabling NIC backends
+#    produced a MoRI that deadlocked at the cross-node EP all-to-all init.
 # -----------------------------------------------------------------------------
 ARG MORI_REPO=https://github.com/ROCm/mori.git
 # 42e895472b08: validated MoRI tip for GLM DSA WideEP disagg. The v0.27 base bundles
@@ -119,7 +146,30 @@ ARG MORI_REPO=https://github.com/ROCm/mori.git
 # base's bundled mori for debugging.
 ARG WITH_MORI_BUILD=1
 ARG MORI_REF=42e895472b08
-ENV MORI_GPU_ARCHS=gfx942
+# -----------------------------------------------------------------------------
+# EP16 / cross-node MoRI-EP over ionic (Tej's PR #558 host-CPU proxy).
+# The default MORI_REF above (42e895472b08, ROCm/mori) is validated for 1P/1D EP8
+# (intra-node all2all over XGMI) and is UNCHANGED. But EP16 = expert-parallel across
+# 2 nodes, so the MoE all2all crosses the ionic fabric -- and GPU-initiated IBGDA
+# doorbell MMIO fails under KVM/VFIO passthrough on ionic. Tej's PR #558 adds a
+# host-CPU-proxy transport (MORI_EP_OVER_RDMA=1 -> TransportType::PROXY: the host
+# rings the NIC doorbell via ibv_post_send) that makes cross-node EP work on ionic.
+#
+# Opt in with --build-arg WITH_MORI_EP_OVER_RDMA=1. That switches the MoRI source to
+# Tej's fork/branch below and applies docker/mori_pr558_ionic.patch, which carries the
+# ONE functional ionic fix on top of #558: MaybeAddRelaxedOrderingFlag strips
+# IBV_ACCESS_REMOTE_ATOMIC when MORI_IO_DISABLE_ATOMIC_MR=1 (ionic rejects atomic-
+# capable MRs with EINVAL/errno 22 at any size; the KV path needs no NIC atomics).
+# The patch also adds an OFF-by-default proxy debug trace (MORI_PROXY_DEBUG).
+# Leaving WITH_MORI_EP_OVER_RDMA=0 (default) reproduces the exact validated EP8 image.
+ARG WITH_MORI_EP_OVER_RDMA=0
+ARG MORI_EP_REPO=https://github.com/itej89/mori.git
+ARG MORI_EP_REF=32f8129c51b8            # tej/feat/ep-rdma-sharing (PR #558) tip
+ENV MORI_GPU_ARCHS=gfx950
+# AAC MI355X: Pensando Ionic (AINIC). Pin device-side IBGDA dispatch to the ionic
+# provider. Auto-detect would also work (8x rocep*s0 -> driver readlink -> ionic,
+# libionic.so.1.1.54.0-184 present), but pin it so the JIT path is deterministic.
+ENV MORI_DEVICE_NIC=ionic
 # Newer MoRI added the UMBP subsystem which requires gRPC (grpcpp/grpcpp.h) not
 # present in this base; UMBP is unrelated to the EP dispatch/combine kernels, so
 # disable it to avoid pulling in a gRPC build dependency.
@@ -127,6 +177,9 @@ ENV BUILD_UMBP=OFF BUILD_UMBP_SPDK=OFF
 # Build/install matches dist-inf-cookbook Dockerfile.vllm.mori121_shareable for v1.2.1:
 # `BUILD_UMBP=OFF pip install .` (default build isolation). apt/pip build tooling kept
 # for bases that lack it; harmless where already present.
+# The ionic EP16 patch (PR #558 + atomic-MR strip). Copied unconditionally so the build
+# context is stable; only applied when WITH_MORI_EP_OVER_RDMA=1.
+COPY docker/mori_pr558_ionic.patch /tmp/mori_pr558_ionic.patch
 RUN sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null || true && \
     sed -i 's|http://|https://|g' /etc/apt/sources.list.d/*.list 2>/dev/null || true && \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -139,11 +192,24 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list 2>/dev/null || true && \
     else \
         pip uninstall -y amd_mori amd-mori amd-mori-nightly mori 2>/dev/null || true && \
         rm -rf /tmp/mori-src && \
-        git clone --recursive "${MORI_REPO}" /tmp/mori-src && \
-        cd /tmp/mori-src && git checkout "${MORI_REF}" && git submodule update --init --recursive && \
+        if [ "${WITH_MORI_EP_OVER_RDMA}" = "1" ]; then \
+            _REPO="${MORI_EP_REPO}" ; _REF="${MORI_EP_REF}" ; \
+        else \
+            _REPO="${MORI_REPO}" ; _REF="${MORI_REF}" ; \
+        fi && \
+        git clone --recursive "${_REPO}" /tmp/mori-src && \
+        cd /tmp/mori-src && git checkout "${_REF}" && git submodule update --init --recursive && \
+        if [ "${WITH_MORI_EP_OVER_RDMA}" = "1" ]; then \
+            git apply --verbose /tmp/mori_pr558_ionic.patch && \
+            echo "  applied docker/mori_pr558_ionic.patch (ionic atomic-MR strip + proxy debug)" ; \
+        fi && \
         BUILD_UMBP=OFF pip install . && \
         python3 -c "import mori, mori.io, mori.ops; print('MoRI OK at', mori.__path__[0])" && \
-        echo "MORI_REF=${MORI_REF}@$(git -C /tmp/mori-src rev-parse HEAD)" >> /app/versions.txt && \
+        if [ "${WITH_MORI_EP_OVER_RDMA}" = "1" ]; then \
+            echo "MORI_REF=${_REF}@$(git -C /tmp/mori-src rev-parse HEAD) (PR#558 EP-over-RDMA + ionic patch)" >> /app/versions.txt ; \
+        else \
+            echo "MORI_REF=${_REF}@$(git -C /tmp/mori-src rev-parse HEAD)" >> /app/versions.txt ; \
+        fi && \
         rm -rf /tmp/mori-src ; \
     fi
 
@@ -196,35 +262,34 @@ ARG VLLM_REPO=https://github.com/raviguptaamd/vllm.git
 # disagg long-ctx). NIAH-validated 1P/1D + 2P/1D + 1P/2D, 2k-35k, decode PIECEWISE.
 ARG VLLM_REF=glm5.1-dsa-wideEP_on_vllm-v0.27
 ENV VLLM_TARGET_DEVICE=rocm \
-    PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
-    MAX_JOBS=${MAX_JOBS}
+    PYTORCH_ROCM_ARCH=${BUILD_ROCM_ARCH} \
+    MAX_JOBS=${BUILD_MAX_JOBS}
 RUN rm -rf /tmp/vllm-src && \
     git clone "${VLLM_REPO}" /tmp/vllm-src && \
     cd /tmp/vllm-src && git checkout "${VLLM_REF}" && \
     echo "VLLM_REF=${VLLM_REF}@$(git rev-parse HEAD)" >> /app/versions.txt && \
     pip uninstall -y vllm 2>/dev/null || true && \
     pip install --no-deps --no-build-isolation -v . && \
-    python3 -c "import vllm; print('vLLM', vllm.__version__, 'from', vllm.__file__)" && \
+    python3 -c "import importlib.metadata as m, pathlib; d=m.distribution('vllm'); print('vLLM', d.version, 'from', pathlib.Path(d.locate_file('vllm')))" && \
     rm -rf /tmp/vllm-src
 
 # Cross-check MoRI + AITER survived the vLLM install (no silent downgrade).
-RUN python3 - <<'PYEOF'
-from importlib.metadata import version as v, PackageNotFoundError
-def get(names):
-    for n in names:
-        try: return v(n)
-        except PackageNotFoundError: pass
-    return None
-av = get(("amd-aiter", "amd_aiter", "aiter"))
-# Verify the aiter install survived the vLLM install (present, not silently downgraded
-# to a base-bundled wheel). We pin aiter by commit (e03fa6040), whose reported version
-# string varies by build, so assert presence rather than a hardcoded commit substring. Do NOT
-# `import aiter` here: it pulls torch->amdsmi->libamd_smi.so, not loadable in the no-GPU
-# build sandbox (same reason the Stage-2 verify reads mla.py from disk instead).
-assert av, "AITER missing after vLLM install (expected bundled 0.1.19 or source-built ref)"
-import mori, mori.io, mori.ops
-print("Post-vLLM check OK: AITER", av, "present + MoRI importable")
-PYEOF
+RUN python3 -c "$(printf '%s\n' \
+  'from importlib.metadata import version as v, PackageNotFoundError' \
+  'def get(names):' \
+  '    for n in names:' \
+  '        try: return v(n)' \
+  '        except PackageNotFoundError: pass' \
+  '    return None' \
+  'av = get(("amd-aiter", "amd_aiter", "aiter"))' \
+  '# Verify the aiter install survived the vLLM install (present, not silently downgraded' \
+  '# to a base-bundled wheel). We pin aiter by commit (e03fa6040), whose reported version' \
+  '# string varies by build, so assert presence rather than a hardcoded commit substring. Do NOT' \
+  '# `import aiter` here: it pulls torch->amdsmi->libamd_smi.so, not loadable in the no-GPU' \
+  '# build sandbox (same reason the Stage-2 verify reads mla.py from disk instead).' \
+  'assert av, "AITER missing after vLLM install (expected bundled 0.1.19 or source-built ref)"' \
+  'import mori, mori.io, mori.ops' \
+  'print("Post-vLLM check OK: AITER", av, "present + MoRI importable")')"
 
 # -----------------------------------------------------------------------------
 # 4. vllm-router (DP-rank round-robin + MoRIIO connector) — built in, so NO
@@ -254,7 +319,7 @@ RUN if ! command -v cargo >/dev/null 2>&1; then \
     rm -rf /tmp/vllm-router-src
 
 # -----------------------------------------------------------------------------
-# 4b. WITH_NIXL=1 (default): UCX + RIXL(+nixlbench) + rocSHMEM + DeepEP from source,
+# 4b. WITH_NIXL=1 (OPT-IN; default is 0): UCX + RIXL(+nixlbench) + rocSHMEM + DeepEP from source,
 #     so the rixl connector (NIXL TP + DeepEP wideEP) is present. Single guarded RUN so
 #     WITH_NIXL=0 skips it entirely (no layers, no cost). Build-verified on ci_base.
 # -----------------------------------------------------------------------------
