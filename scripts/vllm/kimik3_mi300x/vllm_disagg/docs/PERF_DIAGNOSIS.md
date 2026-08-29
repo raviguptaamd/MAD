@@ -52,3 +52,17 @@ remote_dp_rank=self._global_dp_rank (the rank prefill ACTUALLY ran) + remote_dp_
 decode gate _should_notify = (self._global_dp_rank == remote_dp_rank) -> notifies the CORRECT
 rank -> NO deferred stall. Expected: per-request latency drops from ~160s to ~seconds.
 STATUS: relaunched with MORIIO_READ_MODE=1, keeping thinking=false/320K/F_A_P. Validating.
+
+## READ_MODE test RESULT: FAILED (rejected)
+MORIIO_READ_MODE=1 + F_A_P: request still 149.2s (stall NOT fixed) AND output GARBAGE
+("与 相似 相似..." repeated CJK, not "8241"). The READ+FULL_AND_PIECEWISE combo breaks
+accuracy exactly as the connector warns (moriio_connector.py:230: "per-layer KV-read barrier
+can't fire inside full graph"). => the ~150s stall is COMMON to WRITE and READ, so it is NOT
+the WRITE-notify DP-rank mismatch. Reverting READ mode.
+NEW HYPOTHESIS: the ~150s is a FIXED COMPUTE/BARRIER cost common to both transfer paths, not
+a notify timeout. GPU pinned 100% the whole time. Candidates: (a) decode forward over a
+huge/padded batch per request; (b) a MoRI all2all/collective barrier (mori_low_latency
+InterNodeV1LL) stalling ~150s; (c) the eager_handshake_all_dp_ranks all-reduce barrier.
+Since it's GPU-bound (not network-idle), lean (a)/(b). NEXT: check decode batch/token shape
+per request + whether mori_low_latency all2all is the 150s. Consider decode all2all-backend
+= mori_high_throughput, or reduce max_num_batched_tokens.
