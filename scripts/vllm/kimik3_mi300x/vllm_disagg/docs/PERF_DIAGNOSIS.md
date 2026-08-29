@@ -183,3 +183,16 @@ CONCLUSION: implement the deterministic RDMA READBACK (read-after-write forces g
 visibility, no guessed ms) in _finalize_if_complete before send_notify. This is the perf-safe
 correct fix (vs a large blind sleep that also adds latency to every request).
 Next: implement readback in the connector, rebuild image / hot-patch, re-test con=8 -> target 8/8.
+
+## RDMA READBACK result: con=8 -> 6/8 (same as fence, > 3/8 baseline; not yet 8/8)
+K3_WRITE_READBACK=1 (patch applied confirmed in-container). con=8 @6K: 6/8. Same 2 reqs
+(req1 slot7001, req5 slot7005) fail as in the fence run -> the residual is likely NOT pure
+visibility timing:
+- My readback reads ONE region (offset 0 of the last write). KV spans MANY blocks/layers/groups
+  (K3 has 4 KV-cache groups + MLA + KDA); a single-offset readback doesn't force ALL written
+  regions globally visible -> some blocks still race.
+- OR the consistent req1/req5 failures are a different bug (a specific DP-rank pair / a
+  particular needle depth) not the write-race at all.
+NEXT: (a) make readback cover the last write of EVERY transfer_status (loop over the request's
+writes, not one offset); (b) inspect the 2 failing responses (truncated vs wrong-KV vs
+cross-request) to confirm it's still the race; (c) try readback + small fence combined.
