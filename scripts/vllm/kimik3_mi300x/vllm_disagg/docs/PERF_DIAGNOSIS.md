@@ -101,3 +101,16 @@ For a matched request (prefill Worker_DP1 + decode notify rank=1 -- ranks AGREE)
 ## bnxt (new MoRI 624002c8 vs v3's older MoRI -- THE version delta); (2) decode all2all-backend
 ## mori_high_throughput instead of low_latency; (3) MoRI bisect. v3 used older MoRI + same
 ## mori_low_latency and got ~20s/50K -> the MoRI version is the prime suspect.
+
+## *** MAJOR REFRAME: the ~150s AMORTIZES across concurrency (it batches!) ***
+Live serve (decode PIECEWISE+LL), thinking=false, 2K reqs:
+- N=1: ~170s
+- N=4 concurrent: wall=181s, ALL 4 complete, ALL recall correct.
+=> 4 requests in ~the time of 1. The ~150s is NOT per-request-serial -- it's a FIXED
+   per-decode-wave latency FLOOR that is SHARED across all in-flight requests. Effective
+   per-request cost at con=4 = ~45s; expected to keep dropping with concurrency.
+This means the serve IS throughput-capable; the ~150s is a fixed floor (a decode-step /
+all2all warmup or a fixed wait that fires once per wave), amortized by batching. Far more
+optimizable than a serial bug. The floor itself is still worth killing (latency), but
+THROUGHPUT is fine and scales with con. Confirm con=16 amortization next; then chase the
+floor (MoRI all2all warmup / a fixed per-step barrier).
