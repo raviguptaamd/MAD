@@ -35,3 +35,20 @@ dispatch differs. The ~160s == a deferred-timeout default somewhere in the WRITE
    connector-side self-derive (compute H=hash(uuid)%dp_size on both legs identically).
 3. **Lower the deferred timeout** so the fallback fires fast (masks, doesn't fix).
 4. Bisect MoRI 624002c8 for the WRITE-notify behavior change vs v3's MoRI.
+
+## FIX IN TEST: MORIIO_READ_MODE=1 (returnable path)
+CONFIRMED the exact mechanism (moriio_connector.py:1190-1210 + 794/816-835):
+- Router (pin 82dc9811, vllm_pd_router.rs:391-490/697-845) sets the X-data-parallel-rank
+  DISPATCH header (round-robin) but does NOT set kv_transfer_params.remote_dp_rank.
+- In WRITE mode, decode does remote_dp_rank = kv_transfer_params.get("remote_dp_rank", 0)
+  -> DEFAULTS TO 0 -> always notifies prefill rank 0. But prefill ran on a round-robin rank
+  != 0 -> notify misroutes -> decode waits the deferred timeout (~160s) then a fallback
+  recovers the KV (correct output, ~160s late).
+- WRITE mode is NOT "returnable": prefill's request_finished echo of remote_dp_rank only
+  reaches decode on READ / serial-WRITE paths (:719-720, :1190).
+FIX: MORIIO_READ_MODE=1 -> READ path IS returnable. request_finished (:1200-1210) returns
+remote_dp_rank=self._global_dp_rank (the rank prefill ACTUALLY ran) + remote_dp_rank_override
+=True; router forwards prefill's kv_transfer_params to decode (vllm_pd_router.rs:420-432);
+decode gate _should_notify = (self._global_dp_rank == remote_dp_rank) -> notifies the CORRECT
+rank -> NO deferred stall. Expected: per-request latency drops from ~160s to ~seconds.
+STATUS: relaunched with MORIIO_READ_MODE=1, keeping thinking=false/320K/F_A_P. Validating.
