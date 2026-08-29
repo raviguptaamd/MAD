@@ -153,3 +153,24 @@ OPEN (2 code-level items, both root-caused):
    KV-ready fence / enable_notification=True.
 NEXT: (a) A/B decode all2all HT vs LL for the floor; (b) try enable_notification=True for the
 write-race; (c) profile the floor with rocprof.
+
+## Accuracy baseline: SEQUENTIAL = 3/3 (con=1 clean), race is purely CONCURRENCY
+Distinct-needle NIAH @6K sequential (con=1): 3/3 recall (req0 100s, req1 268s, req2 105s).
+=> single-request accuracy SOLID. The 3/8 at con=8 is the concurrency write-race, confirmed.
+
+## Write-race fix analysis (code-confirmed)
+Sequence in _finalize_if_complete (moriio_engine.py:480-540):
+  1. waiting_for_transfer_complete() -> waits status.Succeeded() = SENDER WR done (data left
+     sender NIC) -- NOT receiver-HBM-visible.
+  2. optional k3-write-fence sleep (K3_WRITE_FENCE=delay).
+  3. send_notify(write_done) via ZMQ -> decode admits request, reads KV.
+The gap: RDMA-WRITE sender-completion != remote-HBM global visibility without an ordering op.
+Decode's get_finished (WRITE) admits on write_done ZMQ arrival with NO HBM read-fence
+(moriio_connector.py:2216) -> stale read under concurrency.
+PROPER FIX = "readback" (comment at moriio_engine.py:528): after Succeeded, issue a tiny RDMA
+READ of the written remote region (read_remote_data, :673) before write_done -- RDMA read to
+same QP forces prior writes globally visible. Needs session+scratch-buf threaded into
+_finalize_if_complete (deeper change). enable_notification=True is a DEAD END (hardcoded False
+with documented ibv_post_send ENOMEM hang, :628).
+INTERIM TEST: K3_WRITE_FENCE=delay at LARGE ms (200) to prove the race is visibility-timing
+(v3 tried 20ms "no gain"; test if bigger closes it -> validates readback is the fix).
