@@ -127,3 +127,29 @@ likely the FULL-graph + high-concurrency KV-read-barrier degradation the connect
   B. LATENCY FLOOR (~150s) + ACCURACY@concurrency: chase the shared per-wave floor (MoRI
      all2all warmup / fixed barrier) and verify NIAH recall holds at con (may need PIECEWISE
      not FULL for the read barrier, per :230).
+
+## Distinct-needle NIAH @ con=8 (6K): 3/8 recall -> REAL accuracy-under-concurrency issue
+Live serve confirmed decode=PIECEWISE + WRITE mode. con=8 distinct needles: 3/8 correct,
+wall=261s. So accuracy-at-concurrency fails EVEN on PIECEWISE+WRITE (not a toy-prompt artifact,
+not the FULL-graph barrier alone).
+=> This is the RESIDUAL RDMA WRITE-RACE (same class documented for v3: decode reads a KV block
+   before its RDMA write is globally visible in decode HBM; wait_for_layer_load() is a no-op;
+   write_done travels ZMQ separate from the RDMA data path). v3 hit it at high-ctx/multi-needle;
+   under concurrency it hits a larger fraction of requests. Single-request + low-con is fine.
+FIX (code, decode-side): a per-request KV-ready HBM fence/barrier before the decode forward
+consumes the block (sender-side knobs FAILED in v3: K3_WRITE_FENCE=delay, POST_BATCH_SIZE).
+Candidates: enable_notification=True path (currently hardcoded False, moriio_engine.py:633) so
+completion is RDMA-signalled not ZMQ; or a decode read-barrier keyed on transfer completion.
+
+## SUMMARY OF STATE (this session)
+GOOD:
+- Correctness single-request/low-con: PASS (NIAH 50K/100K). thinking=false works.
+- THROUGHPUT: excellent -- con1/con4/con16 all ~= same wall (~180s@2K); the latency floor is
+  fully shared/amortized across a decode wave. Serve is throughput-capable.
+OPEN (2 code-level items, both root-caused):
+1. Latency FLOOR ~150-250s per wave (fixed cost; suspect MoRI InterNodeV1LL all2all warmup /
+   a per-wave barrier). Amortizes with con but hurts single-stream latency.
+2. Accuracy@concurrency: RDMA write-race (decode reads pre-visible KV). Needs decode-side
+   KV-ready fence / enable_notification=True.
+NEXT: (a) A/B decode all2all HT vs LL for the floor; (b) try enable_notification=True for the
+write-race; (c) profile the floor with rocprof.
