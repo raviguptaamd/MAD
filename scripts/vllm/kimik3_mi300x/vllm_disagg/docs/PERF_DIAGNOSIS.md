@@ -77,3 +77,27 @@ Also the connector explicitly warns READ/barrier can't fire inside a FULL graph 
 FIX: decode CG=PIECEWISE (exact v3 value), WRITE mode, thinking=false. Relaunching. Expect
 per-request latency to drop toward v3's ~seconds. This aligns v4 to the proven-working v3
 decode config (only the stack underneath is upgraded: base/vLLM/MoRI).
+
+## PIECEWISE test RESULT: also 171.9s (correct recall). Stall is INVARIANT.
+decode CG=PIECEWISE (exact v3 value): request 171.9s, recall CORRECT. So the ~150-170s is
+INVARIANT across: WRITE/READ mode, F_A_P/PIECEWISE cudagraph. Not the transfer path, not
+cudagraph, not reasoning, not DP-rank mismatch.
+
+## PRECISE TRACE of the stall (both sides 100% GPU, no logs, ~150s):
+For a matched request (prefill Worker_DP1 + decode notify rank=1 -- ranks AGREE):
+  01:32:08 prefill DP1 "write-stash" (KV staged, moriio_connector.py:2730)
+  01:32:10 decode "notify prefill rank=1" (blocks ready) -- handshake+notify FAST (~2s), MATCHED
+  01:32:10 -> ~01:34:40 : ZERO log activity on decode AND prefill; BOTH GPUs pinned 100%;
+            ~150s later the request completes with correct output.
+=> After a correct+fast handshake, BOTH prefill(rank1) and decode spin at 100% GPU for ~150s
+   with no logs. This is a COMPUTE/COLLECTIVE stall, not a network timeout (network idle would
+   be GPU~0). Signature = a MoRI all2all collective barrier on the decode MoE path
+   (mori_low_latency = InterNodeV1LL cross-node dispatch/combine) hanging ~150s per request,
+   OR a decode forward recomputing something huge. Per-request (req2 also ~178s), not one-time.
+
+## RULED OUT this session: reasoning(thinking off=same), WRITE-notify DP mismatch(READ=same
+## 150s+garbage), cudagraph mode(PIECEWISE=same 171s), qp/num_workers knobs(broke transfer).
+## REMAINING SUSPECTS: (1) MoRI InterNodeV1LL decode all2all per-request ~150s barrier on
+## bnxt (new MoRI 624002c8 vs v3's older MoRI -- THE version delta); (2) decode all2all-backend
+## mori_high_throughput instead of low_latency; (3) MoRI bisect. v3 used older MoRI + same
+## mori_low_latency and got ~20s/50K -> the MoRI version is the prime suspect.
