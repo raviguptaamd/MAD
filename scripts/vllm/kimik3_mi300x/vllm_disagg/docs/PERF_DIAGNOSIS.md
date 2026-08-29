@@ -114,3 +114,16 @@ all2all warmup or a fixed wait that fires once per wave), amortized by batching.
 optimizable than a serial bug. The floor itself is still worth killing (latency), but
 THROUGHPUT is fine and scales with con. Confirm con=16 amortization next; then chase the
 floor (MoRI all2all warmup / a fixed per-step barrier).
+
+## con=16 CONFIRMS amortization (+ surfaces accuracy-under-concurrency)
+N=16 concurrent (2K reqs, thinking off): wall=183s -- SAME as N=1 (~170s) and N=4 (181s).
+=> 16 requests in the time of 1. Throughput scales ~linearly with concurrency; the ~150s is
+a fully-shared per-wave floor. Effective per-req: con4~45s, con16~11s, con32~6s (projected).
+CAVEAT: recall mixed at con=16 (9/16 correct) on the trivial "Code {i} is 8241" prompt --
+likely the FULL-graph + high-concurrency KV-read-barrier degradation the connector warns about
+(:230), and/or the toy prompt (many identical "8241" codes). MUST re-check with real NIAH
+(distinct needles) at concurrency. TWO workstreams now:
+  A. THROUGHPUT: already good (con scales). Report perf_sweep TTFT/tok-s at con16/32.
+  B. LATENCY FLOOR (~150s) + ACCURACY@concurrency: chase the shared per-wave floor (MoRI
+     all2all warmup / fixed barrier) and verify NIAH recall holds at con (may need PIECEWISE
+     not FULL for the read barrier, per :230).
