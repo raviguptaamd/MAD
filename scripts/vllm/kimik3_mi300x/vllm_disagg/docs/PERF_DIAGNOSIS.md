@@ -249,3 +249,20 @@ Recommended serve flags: K3_WRITE_READBACK=1, thinking per-request (or serve def
 clients use generous timeouts until the wave floor is optimized.
 NEXT (perf, not accuracy): attack the ~150s wave floor (MoRI InterNodeV1LL all2all warmup /
 per-wave barrier) so tail latency drops and no client times out.
+
+## SESSION END STATE (accuracy path driven; PR #5 updated)
+DELIVERED:
+- RDMA multi-region read-after-write barrier (K3_WRITE_READBACK=1) -> concurrency KV-corruption
+  ELIMINATED. con=8: every completed request CORRECT (was 3/8 garbage). Committed to PR.
+- Single-request 50K: clean recall (MT>=256). Formal config kept: prefill HT+eager, decode
+  LL+FULL_AND_PIECEWISE, thinking=false, readback on.
+- Full experiment log + OPT_ROADMAP in the PR.
+REMAINING (perf, not accuracy):
+1. ~150s per-decode-wave latency FLOOR (amortizes across con: con16 ~= con1 wall). Prime
+   suspect MoRI InterNodeV1LL all2all warmup/barrier. Attack: decode all2all HT A/B, rocprof
+   the floor, or MoRI bisect. Causes tail client-timeouts at con until raised timeout / fix.
+2. Serve DEGRADES over long lifetime (a 50K req that took ~150s fresh took >10min after hours
+   of test cycles) -> for clean perf numbers, restart the serve fresh before benchmarking.
+3. kimi_k3 parser leaks <|open|>response<|sep|> on thinking=false (cosmetic; MT>=256 absorbs).
+NEXT SESSION: fresh serve restart -> clean NIAH sweep (MT=256) for the accuracy table ->
+attack the wave floor for latency. Accuracy is deployment-ready; perf is the remaining work.
