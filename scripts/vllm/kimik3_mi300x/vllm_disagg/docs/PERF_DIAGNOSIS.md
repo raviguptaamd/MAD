@@ -66,3 +66,14 @@ InterNodeV1LL) stalling ~150s; (c) the eager_handshake_all_dp_ranks all-reduce b
 Since it's GPU-bound (not network-idle), lean (a)/(b). NEXT: check decode batch/token shape
 per request + whether mori_low_latency all2all is the 150s. Consider decode all2all-backend
 = mori_high_throughput, or reduce max_num_batched_tokens.
+
+## *** LIKELY REAL FIX: decode CG=PIECEWISE (not FULL_AND_PIECEWISE) ***
+Compared to the WORKING v3 (#193) config (~20s/50K): v3 decode = mori_low_latency + CG=**PIECEWISE**
+(run_2p2d.sh:100). My v4 runs used decode CG=**FULL_AND_PIECEWISE** (I changed it for "perf").
+The FULL graph captures a full max_num_seqs=32 batch; if decode replays the FULL graph for
+even a single request, it computes ~32x the work per step -> ~150s. PIECEWISE does not.
+Also the connector explicitly warns READ/barrier can't fire inside a FULL graph (:230).
+=> The ~150s stall + garbage was likely FULL_AND_PIECEWISE, NOT the transfer path.
+FIX: decode CG=PIECEWISE (exact v3 value), WRITE mode, thinking=false. Relaunching. Expect
+per-request latency to drop toward v3's ~seconds. This aligns v4 to the proven-working v3
+decode config (only the stack underneath is upgraded: base/vLLM/MoRI).
