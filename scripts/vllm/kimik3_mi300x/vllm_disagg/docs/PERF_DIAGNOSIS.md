@@ -196,3 +196,20 @@ visibility timing:
 NEXT: (a) make readback cover the last write of EVERY transfer_status (loop over the request's
 writes, not one offset); (b) inspect the 2 failing responses (truncated vs wrong-KV vs
 cross-request) to confirm it's still the race; (c) try readback + small fence combined.
+
+## MULTI-REGION READBACK: KV-corruption FIXED. Residual 2/8 is FORMATTING, not the race.
+Readback now reads back EVERY written region (readback_targets list, capped 64). con=8 @6K:
+6/8, but the FAILURE MODE CHANGED -- the garbage is GONE:
+  BEFORE (single-offset readback): fails = "50个单词", "1e0a1e0a", "?cataract?" (KV corruption).
+  NOW (multi-region): 6/8 clean "ZEBRA-70XX" finish=stop; the 2 fails are:
+    req1: content="response<|sep|><|open|>tools<|sep|>..." -- TOOL/response-channel TOKENS
+          leaking into content (parser/template artifact, NOT corruption).
+    req5: finish=stop, content='' -- EMPTY output (early stop), NOT corruption.
+=> The RDMA read-after-write barrier (covering all regions) ELIMINATES the concurrency
+   KV-corruption. Remaining 2/8 = output-formatting: with thinking:false the model opens the
+   response channel and sometimes emits <|open|>response<|sep|>/tools markers that the
+   kimi_k3 reasoning parser doesn't strip on the no-think path, or stops empty. This is a
+   PARSER/template fix, separate from KV integrity.
+NEXT: fix the response-channel marker stripping on thinking:false (kimi_k3_reasoning_parser
+strips think markers; must also strip <|open|>response<|sep|>/<|close|> when thinking off),
+or set thinking back on for accuracy runs (needle lands in reasoning_content, cleanly parsed).
