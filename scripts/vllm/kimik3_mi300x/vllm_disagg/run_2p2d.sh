@@ -208,6 +208,8 @@ docker run -d --name "$CONTAINER" \
   -e K3_FORCE_PREFILL_KDA="${K3_FORCE_PREFILL_KDA:-0}" \
   -e K3_WRITE_FENCE_MS="${K3_WRITE_FENCE_MS:-20}" \
   -e K3_WRITE_DEVSYNC="${K3_WRITE_DEVSYNC:-0}" \
+  -e K3_WRITE_READBACK="${K3_WRITE_READBACK:-0}" \
+  -e K3_WRITE_READBACK_BYTES="${K3_WRITE_READBACK_BYTES:-8}" \
   -e K3_KDA_CONV_DEBUG="${K3_KDA_CONV_DEBUG:-0}" \
   -e K3_FWD_BREADCRUMB="${K3_FWD_BREADCRUMB:-0}" \
   -e K3_WRITE_BC="${K3_WRITE_BC:-0}" \
@@ -230,6 +232,7 @@ docker run -d --name "$CONTAINER" \
   -e QUANT_CONFIG="$QUANT_CONFIG" \
   -v "$MODEL_DIR":/model:ro -v "$LOGHOST":/logs \
   -v "$JIT_HOST":/opt/vllm_cache \
+  ${READBACK_PATCH_HOST:+-v ${READBACK_PATCH_HOST}:/readback_patch:ro} \
   ${BNXT_MOUNTS} \
   --entrypoint bash \
   "$IMAGE" -c "
@@ -259,6 +262,14 @@ docker run -d --name "$CONTAINER" \
     # engine<->front-end handshake (core.py HANDSHAKE_TIMEOUT_MINS=5), crashing the
     # worker before the master finishes compiling. Bump it to 30 min.
     sed -i 's/^HANDSHAKE_TIMEOUT_MINS = 5\$/HANDSHAKE_TIMEOUT_MINS = 30/' /usr/local/lib/python3.12/dist-packages/vllm/v1/engine/core.py || true
+    # k3-readback: overlay the RDMA read-after-write connector patch (moriio_engine
+    # /moriio_common) if staged. Deterministic write-race fix; gated at runtime by
+    # K3_WRITE_READBACK=1. No-op if the mount is absent.
+    if [ -d /readback_patch ]; then
+      cp -f /readback_patch/moriio_engine.py /readback_patch/moriio_common.py \
+        /usr/local/lib/python3.12/dist-packages/vllm/distributed/kv_transfer/kv_connector/v1/moriio/ 2>/dev/null \
+        && echo '[disagg] readback connector patch applied' || echo '[disagg] readback patch cp failed'
+    fi
     echo '[disagg] launching vllm serve...'
     vllm serve /model --served-model-name kimi-k3 --tensor-parallel-size ${TP_SIZE} \
       --data-parallel-size ${DP_SIZE} --data-parallel-size-local ${DP_LOCAL} \
