@@ -213,3 +213,17 @@ Readback now reads back EVERY written region (readback_targets list, capped 64).
 NEXT: fix the response-channel marker stripping on thinking:false (kimi_k3_reasoning_parser
 strips think markers; must also strip <|open|>response<|sep|>/<|close|> when thinking off),
 or set thinking back on for accuracy runs (needle lands in reasoning_content, cleanly parsed).
+
+## SESSION WIN: RDMA read-after-write barrier fixes concurrency KV-corruption
+The multi-region RDMA readback (K3_WRITE_READBACK=1) is the real, deterministic fix for the
+concurrency write-race that a K3_WRITE_FENCE sleep could not fully close:
+  no fix: con=8 3/8 (garbage). fence 200ms: 6/8 (garbage). readback(multi): 6/8 CLEAN (no
+  garbage; residual 2 = response-channel token leak + 1 empty, both parser/formatting).
+=> KV integrity under concurrency is SOLVED at the transport layer. Remaining accuracy gap is
+   the kimi_k3 reasoning parser leaking <|open|>response<|sep|> on the thinking=false path
+   (cosmetic; needle still recalled) + occasional empty/tool-token output. Options for the
+   residual: (a) fix parser response-marker strip on no-think; (b) run NIAH with thinking ON
+   (needle in reasoning_content, cleanly parsed) for accuracy validation.
+CONFIG for deployment: K3_WRITE_READBACK=1 (in launcher, default 0; set 1 for correctness at
+concurrency). Cost: one tiny RDMA read per written region per request (bounded 64), ordered
+after writes -- negligible vs the ~150s wave floor, and the floor amortizes across con anyway.
