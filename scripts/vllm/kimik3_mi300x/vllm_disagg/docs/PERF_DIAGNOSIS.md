@@ -174,3 +174,12 @@ _finalize_if_complete (deeper change). enable_notification=True is a DEAD END (h
 with documented ibv_post_send ENOMEM hang, :628).
 INTERIM TEST: K3_WRITE_FENCE=delay at LARGE ms (200) to prove the race is visibility-timing
 (v3 tried 20ms "no gain"; test if bigger closes it -> validates readback is the fix).
+
+## FENCE TEST RESULT: 200ms sender-delay improved con=8 from 3/8 -> 6/8
+K3_WRITE_FENCE=delay, K3_WRITE_FENCE_MS=200 (confirmed in prefill container). con=8 @6K:
+6/8 recall (was 3/8 with no fence). => VALIDATES it's a visibility-timing race; a barrier
+closes it, but a FIXED sleep is imperfect (RDMA write-completion time varies -> 2 still race).
+CONCLUSION: implement the deterministic RDMA READBACK (read-after-write forces global
+visibility, no guessed ms) in _finalize_if_complete before send_notify. This is the perf-safe
+correct fix (vs a large blind sleep that also adds latency to every request).
+Next: implement readback in the connector, rebuild image / hot-patch, re-test con=8 -> target 8/8.
