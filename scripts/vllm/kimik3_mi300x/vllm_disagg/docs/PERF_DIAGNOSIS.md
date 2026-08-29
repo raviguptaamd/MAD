@@ -227,3 +227,10 @@ concurrency write-race that a K3_WRITE_FENCE sleep could not fully close:
 CONFIG for deployment: K3_WRITE_READBACK=1 (in launcher, default 0; set 1 for correctness at
 concurrency). Cost: one tiny RDMA read per written region per request (bounded 64), ordered
 after writes -- negligible vs the ~150s wave floor, and the floor amortizes across con anyway.
+
+## CLARIFICATION: single-request 50K CLEAN with readback (earlier "FAIL" was MT=64 truncation)
+niah_sweep MT=64 truncated: the thinking=false response-marker preamble eats ~tokens before
+the answer -> finish=length, false FAIL. Re-ran ONE 50K @MT=256: recall=True finish=stop
+content='ZEBRA-9999' -- CLEAN. So single-request accuracy at 50K holds with readback on.
+Bumped niah_sweep max_tokens 64->256. The response-marker leak just needs output headroom
+(or the parser strip fix). Net: readback = KV integrity solved; probes need MT>=256.
