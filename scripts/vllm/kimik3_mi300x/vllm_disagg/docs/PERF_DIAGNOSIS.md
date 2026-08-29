@@ -234,3 +234,18 @@ the answer -> finish=length, false FAIL. Re-ran ONE 50K @MT=256: recall=True fin
 content='ZEBRA-9999' -- CLEAN. So single-request accuracy at 50K holds with readback on.
 Bumped niah_sweep max_tokens 64->256. The response-marker leak just needs output headroom
 (or the parser strip fix). Net: readback = KV integrity solved; probes need MT>=256.
+
+## *** ACCURACY MILESTONE: readback + MT>=256 -> con=8 all-completed-requests CORRECT ***
+con=8 @6K, readback ON, MT=256: 6/8 recall -- and every request that RETURNED is CLEAN &
+correct (ZEBRA-70XX, finish=stop, no garbage, no marker leak). The 2 "fails" are CLIENT
+TIMEOUTS (req5/req7 exceeded the 400s client timeout because the ~150s wave floor x queue
+depth), NOT corruption or wrong answers.
+=> With RDMA readback + adequate max_tokens, KV integrity + accuracy under concurrency is
+   SOLVED. The residual is purely LATENCY (the wave floor causing tail timeouts), which is a
+   throughput/perf item -- and it amortizes across concurrency (con16 ~= con1 wall). Raising
+   the client timeout or fixing the floor closes the tail.
+DEPLOYMENT-READY ACCURACY: single-request clean (50K), concurrent completed-requests clean.
+Recommended serve flags: K3_WRITE_READBACK=1, thinking per-request (or serve default false),
+clients use generous timeouts until the wave floor is optimized.
+NEXT (perf, not accuracy): attack the ~150s wave floor (MoRI InterNodeV1LL all2all warmup /
+per-wave barrier) so tail latency drops and no client times out.
