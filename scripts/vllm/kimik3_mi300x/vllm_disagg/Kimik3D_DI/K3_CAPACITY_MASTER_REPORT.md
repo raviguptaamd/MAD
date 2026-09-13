@@ -6,15 +6,15 @@
 Everything here is measured on disk under `results/`. Code links are given as repo refs;
 those marked `⟨PR pending⟩` are placeholders until the MAD/vLLM PRs are upstreamed.
 
-- **Status:** MI325X ✅ complete · MI300X ✅ complete · cross-platform capacity model validated
-- **Last updated:** 2026-09-02
+- **Status:** MI325X ✅ complete (900K ladder) · MI300X ✅ complete (500K ladder, con>1-fix stack) · cross-platform capacity model validated
+- **Last updated:** 2026-09-13
 - **Blog HTML:** `K3_CAPACITY_BLOG_REPORT.html` (renders 11 figures + 8 sections)
 
 ---
 
 ## 0 · TL;DR (5 lines)
 
-> We serve Kimi-K3 (1.4 TB MXFP4 MoE) disaggregated wide-EP (2P/2D, EP16) on two fabrics and show decode obeys `wall = C0 + k·OSL` — a fixed floor plus a per-token slope. The floor is platform-independent (a MoRI all-to-all barrier), so concurrency is nearly free until the KV pool saturates: MI325X (256 GB) rides to con256, MI300X (192 GB) is faster per-step but saturates 4× earlier at con64. A real agentic trace (AgentX) confirms the slope on each platform, proving the floor is physical, not fitted. The buyable axis is memory: MI300X tops out ~100K reliable context vs MI325X 300K — set by the growing MLA KV on the 24 full-attention layers (K3's MLA already compresses KV ~16× natively, which is *why* the wall sits this far out). The capacity model turns "how much hardware" into a number you can compute before you deploy.
+> We serve Kimi-K3 (1.4 TB MXFP4 MoE) disaggregated wide-EP (2P/2D, EP16) on two fabrics and show decode obeys `wall = C0 + k·OSL` — a fixed floor plus a per-token slope. The floor is platform-independent (a MoRI all-to-all barrier), so concurrency is nearly free until the KV pool saturates: MI325X (256 GB) rides to con256, MI300X (192 GB) is faster per-step but saturates 4× earlier at con64. A real agentic trace (AgentX) confirms the slope on each platform, proving the floor is physical, not fitted. The buyable axis is memory: on the con>1-fixed stack MI300X tops out at **500K** reliable context vs MI325X **900K** (a ~1.8× gap — down from ~9× before the fix) — set by the growing MLA KV on the 24 full-attention layers (K3's MLA already compresses KV ~16× natively, which is *why* the wall sits this far out). The capacity model turns "how much hardware" into a number you can compute before you deploy.
 
 ---
 
@@ -24,8 +24,8 @@ those marked `⟨PR pending⟩` are placeholders until the MAD/vLLM PRs are upst
 
 1. **The problem** — Kimi-K3 is 1.4 TB (MXFP4, 93 layers: 24 MLA + 69 KDA). It doesn't fit the usual single-node mental model; there is no published capacity story for serving it disaggregated wide-EP.
 2. **The insight** — decode wall-time is a *fixed floor plus a per-token slope*: `wall = C0 + k·OSL`. `C0` is a platform-independent all-to-all barrier (MoRI EP dispatch/combine); `k` is per-step compute. Because the floor is fixed, **adding concurrency is nearly free until the KV wall** — latency amortizes into throughput.
-3. **The proof** — two platforms, identical recipe (2P/2D EP16, TP2/DP8). MI325X (256 GB) rides the floor to con256; MI300X (192 GB) is *faster per step* but saturates 4× earlier (con64) because its KV pool is ~4 GB vs ~20 GB. AgentX (real Claude-Code trace replay) closes it: measured ITL = the OSL slope on *each* platform (4.49≈4.47, 3.40≈3.32) — the floor is real, not a fit artifact.
-4. **The frontier** — memory, not compute, is the buyable axis: MI300X reliable-NIAH ceiling ~100K vs MI325X 300K; 200K crashes, 320K refused at init. The wall is the growing MLA KV — and K3's MLA already compresses that KV ~16× natively (512-dim fp8 latent vs full multi-head K/V), which is why the ceiling reaches as far as it does.
+3. **The proof** — two platforms, identical recipe (2P/2D EP16, TP2/DP8). MI325X (256 GB) rides the floor to con256; MI300X (192 GB) is *faster per step* but saturates 4× earlier (con64) because its KV pool is ~4 GB vs ~20 GB in the throughput sweep. AgentX (real Claude-Code trace replay) closes it: measured ITL = the OSL slope on *each* platform (4.49≈4.47, 3.40≈3.32) — the floor is real, not a fit artifact.
+4. **The frontier** — memory, not compute, is the buyable axis: on the con>1-fixed stack MI300X reliable-NIAH ceiling is **500K** (750K wedges) vs MI325X **900K** (7/7). The con>1 fix + a disciplined 192 GB config lifted MI300X 5× from the old ~100K, collapsing the gap from ~9× to ~1.8× — proving most of the old gap was config headroom, not silicon. The residual wall is the growing MLA KV (K3's MLA already compresses it ~16× natively — 512-dim fp8 latent vs full multi-head K/V), plus the FULL cudagraph family MI325X can afford and MI300X can't.
 5. **The payoff** — the capacity model tells you *which* platform for *which* SLA before you deploy: latency-bound low-concurrency favors MI300X; throughput-bound or long-context favors MI325X.
 
 ---
@@ -289,7 +289,9 @@ Verified on disk (`results/*/03_perf/`). Classes: latency-floor (128/32), throug
 
 **Note the peak convergence:** both platforms top out at ~74 tok/s aggregate — but MI300X gets
 there at **con64** and MI325X needs **con256**. Same peak, 4× different concurrency to reach it.
-MI325X uniquely serves the 128K/300K long-context classes at all (MI300X can't — §8).
+(This throughput sweep predates the con>1 fix; on the fixed stack MI300X now serves single-request
+long context to **500K** and MI325X to **900K** — see the updated §8. The con64/con256 *concurrency*
+knee is a separate, still-valid throughput-sweep result at small OSL.)
 
 ---
 
@@ -327,24 +329,35 @@ saturate 4× sooner under load — the two findings are the same coin.
 
 ---
 
-## 8 · The memory frontier — three context-wall bites on MI300X
+## 8 · The memory frontier — the con>1 fix lifts MI300X from ~100K to 500K
 
-The most operationally important finding. On identical model+config, the 192 GB platform caps
-*usable context* at roughly **1/3** of the 256 GB platform. Three distinct failure modes,
-verified on disk (`results/mi300x_cx7/02_accuracy_niah/`, `03_perf/MI300X_SWEEP_ANALYSIS.md`):
+The most operationally important finding, and it **changed** once the con>1 accuracy fix
+(§11) landed. On the **pre-fix** stack the 192 GB platform capped usable context at ~100K —
+roughly 1/9 of MI325X. On the **con>1-fixed** stack (`v4-disagg-situ-restore-mambafix`,
+`206fffe`) with a properly-budgeted 192 GB memory config, the MI300X reliable ceiling rises
+**5× to 500K**, and the cross-platform ratio collapses from ~9× to ~1.8×.
 
-1. **320K refused at init** — vLLM computes "estimated maximum model length is 264960" from the
-   KV budget and refuses to start. Fix/cap: `MAX_MODEL_LEN=262144`.
-2. **200K crashes the serve at runtime** — HTTP 500 → prefill pool dies with a
-   `sync_cudagraph_and_dp_padding` recursion (`dp_utils.py:39`) + "ApiServer died". 256K same.
-3. **Reliable ceiling ~100K** — NIAH: 50K PASS all depths (~135 s), 100K PASS all depths (~219 s),
-   200K crash. So although vLLM *accepts* max_model_len=262144, the serve **reliably handles only
-   ≤100K**.
+**MI300X on the fixed stack — single-needle NIAH ladder, PIECEWISE decode.** Config:
+`KV=13 GB`, `MAX_MODEL_LEN=910000`, `MAX_NUM_SEQS=8`, `MORI_SHMEM_HEAP_SIZE=8 GiB`,
+`GPU_UTIL=0.85` (depth 0.5, `HELIOTROPE-7492`, 2P/2D EP16 on nodes 115/121/122/156):
 
-**Contrast MI325X — the frontier reaches 900K on the fixed stack.** On the con>1-fixed +
-int4-SiTU stack (`v4-disagg-situ-restore-mambafix`, `MAX_MODEL_LEN=1M`, `KV=40 GB`,
-`FULL_AND_PIECEWISE`), MI325X served single-needle NIAH **coherently across the full
-20K→900K ladder — 7/7 PASS** (depth 0.5, `HELIOTROPE-7492`):
+| ctx | 20K | 50K | 100K | 200K | 500K | 750K | 900K |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| latency | 10.5 s | 24.0 s | 49.4 s | 111.5 s | 384.9 s | **stall** | — |
+| recall | PASS | PASS | PASS | PASS | PASS | **wedge** | — |
+
+**5/5 PASS 20K→500K**, coherent recall, `finish=stop`, latency scaling cleanly (~linear in ctx).
+**750K is a reproducible wedge** (two independent attempts — in-ladder and isolated — both hung):
+the decode GPUs pin at 100% but emit **zero tokens and zero KV-transfer log activity** for 25–35
+min. Killing the client **recovers the serve instantly** (`OK: READY`), so it is a *request-specific
+high-context transfer wedge, not an engine crash*. The stall signature is the prefill-side
+`k3-readback BatchRead incompatible arguments` warning (non-fatal at ≤500K) plus a fresh
+FMHA `hd192x128` kernel JIT-load for the 750K shape, after which the forward wedges. So the MI300X
+**reliable ceiling on the fixed stack is 500K.**
+
+**Contrast MI325X — the frontier reaches 900K.** Same con>1-fixed + int4-SiTU stack, but the
+256 GB envelope affords `MAX_MODEL_LEN=1M` + `KV=40 GB` + `FULL_AND_PIECEWISE`; MI325X served the
+**full 20K→900K ladder — 7/7 PASS**:
 
 | ctx | 20K | 50K | 100K | 200K | 500K | 750K | 900K |
 |---|---:|---:|---:|---:|---:|---:|---:|
@@ -352,22 +365,29 @@ int4-SiTU stack (`v4-disagg-situ-restore-mambafix`, `MAX_MODEL_LEN=1M`, `KV=40 G
 | recall | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
 
 This **retires the earlier "320K refused / 300K ceiling" claim for MI325X** — that was the older
-stack pinned at `MAX_MODEL_LEN=320000` with a 20 GB KV budget. Raising the KV budget to 40 GB and
-the model-len to 1M (which the 256 GB envelope affords) lets the growing MLA-latent KV fit all the
-way to 900K. At 900K the prefill-side `k3-readback` RDMA barrier logs non-fatal
-`BatchRead incompatible arguments` warnings (a MoRIIO large-region readback limitation) but falls
-back cleanly — the KV still transfers and the needle recalls at 890 s. So the 192 GB (MI300X) vs
-256 GB (MI325X) memory frontier is the real axis: the same growing-MLA-KV wall bites MI300X at
-~100K and MI325X only near/beyond the ~900K native-context edge.
+stack pinned at `MAX_MODEL_LEN=320000` / 20 GB KV. At 900K MI325X logs the *same* non-fatal
+`BatchRead incompatible arguments` MoRIIO readback warning MI300X hits at 750K — but on MI325X
+(256 GB, FULL_AND_PIECEWISE) it **falls back cleanly and completes** (needle recalls at 890 s),
+whereas on MI300X (192 GB, PIECEWISE) the same readback path **wedges**. So both platforms hit the
+*identical* growing-MLA-KV + MoRIIO-large-region-readback wall; MI325X's larger HBM and the FULL
+cudagraph family push that wall **~1.8× further** (900K vs 500K).
 
-**NIAH on PIECEWISE decode is accurate** where it fits: MI300X **9/9 PASS** within the 10K window
-(2K/4K/8K × depths 0.1/0.5/0.9), correct recall, finish=stop, ~50-70 s/req — the accuracy is solid,
-the limit is purely memory/context, not correctness.
+**Interpretation — memory is still the buyable axis, but the gap narrowed.** Pre-fix the ratio was
+~9× (900K vs 100K), which over-sold MI325X; the con>1 fix + a disciplined 192 GB config (half-size
+MoRI heap, tight KV, minimal cudagraph capture) proves most of that gap was *config headroom*, not
+silicon. The residual ~1.8× is the real memory frontier: MI300X's 148.6 GiB/GPU weight footprint
+leaves only ~13 GB for KV vs MI325X's 40 GB, and the FULL cudagraph family (which MI300X can't
+afford) is what carries MI325X's readback fallback through 750K→900K.
 
-**Config note (why PIECEWISE):** `DECODE_CG=PIECEWISE` (drops the FULL cudagraph family) is the
-**only** config that fits 192 GB at 99% VRAM. Bring-up is fragile: capturing cudagraphs at 99%
-VRAM wedges/times-out; we bumped `VLLM_ENGINE_READY_TIMEOUT_S` 3600→7200. See
-`results/mi300x_cx7/CROSS_PLATFORM_FINDING.md`.
+**Why PIECEWISE on MI300X (and why bring-up is iterative).** `DECODE_CG=PIECEWISE` (drops the FULL
+cudagraph family) is the only decode config that fits 192 GB. Bring-up took **5 relaunch iterations**
+to fit the envelope — each a distinct, documented failure that maps to a real capacity constraint:
+(1) `GPU_UTIL=0.9` → free-memory check fails by a hair (MoRI heap + CUDA ctx reserve ~19 GB
+*before* the check) → 0.85; (2) 16 GB MoRI heap + 16 GB KV → PIECEWISE-capture OOM (2.6 GB free <
+6 GB capture) → 8 GB heap; (3) `MAX_MODEL_LEN=1M` → KV-reserve refused (13.1 GB needed > 12.0 avail)
+→ 910K; (4) `MAX_NUM_SEQS=32` → capture 11 graph sizes → connector KV-registration OOM
+(`HSA_STATUS_ERROR_OUT_OF_RESOURCES`, 1.29 GB free) → 8 seqs. MI325X's 256 GB absorbs all four in a
+single one-shot launch. **This iteration count *is* the capacity story: 192 GB has no slack.**
 
 ---
 
@@ -379,7 +399,7 @@ VRAM wedges/times-out; we bumped `VLLM_ENGINE_READY_TIMEOUT_S` 3600→7200. See
 | 2 | Concurrency is ~free until KV wall; MI300X knee con64 vs MI325X con256 (4×) | `results/*/03b_envelope/` |
 | 3 | AgentX real-trace ITL = OSL slope on each platform (symmetric floor proof) | `results/*/04_agentx/`, `AGENTX_FINDINGS.md` |
 | 4 | MI300X faster per-step (lower k) but saturates 4× sooner — same coin | §5 + §7 above |
-| 5 | 192 GB caps usable context ~1/3 of 256 GB (3 distinct bites) | `results/mi300x_cx7/02_accuracy_niah/`, `CROSS_PLATFORM_FINDING.md` |
+| 5 | On con>1-fixed stack, 192 GB reaches 500K vs 256 GB 900K (~1.8×; was ~9× pre-fix) | `results/mi300x_cx7/02_accuracy_niah/`, §8, `CROSS_PLATFORM_FINDING.md` |
 
 ---
 
