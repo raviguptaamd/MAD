@@ -83,11 +83,18 @@ on both masters, then `Add Prefill`/`Add Decode` in the router log.
 ## 4. Validate
 
 ```bash
-# Accuracy — single-needle NIAH sweep (needs max_tokens>=256; thinking=false)
+export ROUTER_URL=http://<PM_IP>:30000     # default 127.0.0.1:30000
+
+# Accuracy (single-needle) — depth × ctx grid
 python3 niah_sweep.py            # 50K/100K/200K/280K x depths 0.1/0.5/0.9
+
+# Accuracy under CONCURRENCY (the con>1 fix) — distinct needle per concurrent request,
+# count how many recall their OWN needle. Correct serve = N/N at every concurrency.
+python3 niah_con_sweep.py        # con=1,8,16,32 @ 50K  -> expect 57/57 = 100%
+python3 niah_con_sweep.py 6000 1,8,16,32   # quick 6K variant
+
 # Throughput / latency — streaming TTFT, e2e, tok/s at concurrency 16 & 32
 python3 perf_sweep.py            # input 8K/16K, output 1k
-# point both at your router; export ROUTER_URL=http://<PM_IP>:30000 (default 127.0.0.1:30000)
 ```
 
 ## Status & known items (full log in `docs/`)
@@ -105,9 +112,10 @@ python3 perf_sweep.py            # input 8K/16K, output 1k
      KV-completion gate). Runs eager, outside cudagraph capture; int4-SiTU + decode
      `FULL_AND_PIECEWISE` intact.
 
-  **Validated (MI325X 2P2D EP16):** NIAH @50K con=1/8/16/32 = **57/57 = 100%**; con=32 @6K
-  **9 consecutive runs @100%**; con=1 permanence after sustained con=32 hammering = **12/12
-  = 100%** (no residual poison). Pre-fix con=32 swung 42–83% (~65% avg).
+  **Validated (MI325X 2P2D EP16):** NIAH @50K con=1/8/16/32 = **57/57 = 100%** (via
+  `niah_con_sweep.py`); con=32 @6K **9 consecutive runs @100%**; con=1 permanence after
+  sustained con=32 hammering = **12/12 = 100%** (no residual poison). Pre-fix con=32 swung
+  42–83% (~65% avg).
 
 - **Perf — open:** a ~150 s per-decode-wave latency **floor** (amortizes across
   concurrency: con16 ≈ con1 wall). Prime suspect: MoRI `624002c8` InterNodeV1LL decode
