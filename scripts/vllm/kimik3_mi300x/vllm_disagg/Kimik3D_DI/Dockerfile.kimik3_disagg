@@ -210,10 +210,14 @@ ARG VLLM_REPO=https://github.com/raviguptaamd/vllm.git
 # NOTE: -v4's KVBlockZeroer took upstream's kernel (dropped our K3 OOB block-id guard);
 # if a "Memory access fault" reappears at high ctx / multi-pod, graft the guard from
 # k3_cuttingedge/deferred_patches/ (see README there).
-# 2cbc11cd7: adds the MoRIIO RDMA read-after-write barrier (K3_WRITE_READBACK) that
-# fixes the concurrency KV write-race (stale/garbage KV under load). Baked into the
-# image so no runtime patch is needed; enable at serve time with K3_WRITE_READBACK=1.
-ARG VLLM_REF=2cbc11cd7b3aff8325ce4646b2b78f0266a9538a
+# 206fffe (branch v4-disagg-situ-restore-mambafix) = 184535a92 int4-SiTU base + 4
+# con>1 accuracy fixes baked in (no runtime patcher):
+#   - zero KDA (mamba) state blocks on recycle (con>1 root cause, issue #35219)
+#   - de-alias KDA decode state-index view (.clone())
+#   - trim MoRI-EP dispatch output to valid tokens + MoE nan-sanitize
+#   - MoRIIO connector require ALL KV group transfers to complete
+# Also carries the RDMA read-after-write barrier (K3_WRITE_READBACK=1, KV write-race).
+ARG VLLM_REF=206fffe029a1fa7dd4fa89bf90661a1657b5ea61
 ENV VLLM_TARGET_DEVICE=rocm \
     PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
     MAX_JOBS=${MAX_JOBS}
