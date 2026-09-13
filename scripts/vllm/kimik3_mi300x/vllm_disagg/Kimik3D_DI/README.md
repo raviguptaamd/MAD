@@ -21,11 +21,14 @@ connector. Self-contained: one Dockerfile builds the image, one launcher brings 
 | Component | Pin |
 |---|---|
 | Base image | `rocm/vllm-dev:ci_base-dedbf6be8b1afa17a6220473b9c8c98242ac1c03` (ROCm 7.2, cp312) |
-| vLLM | `raviguptaamd/vllm@2cbc11cd7` (upstream `d626108b` + K3 MoRIIO deltas + RDMA readback fix) |
+| vLLM | `raviguptaamd/vllm@206fffe` (branch `v4-disagg-situ-restore-mambafix`) = int4-SiTU base `184535a92` + 4 con>1 accuracy fixes (see **Accuracy** below) |
 | MoRI | `624002c897a3` (built from source, `WITH_MORI_BUILD=1`) |
 | AITER | `0.1.19` (prebuilt rocm7.2 wheel) + **flydsl 0.2.4** |
 | vllm-router | pinned `ROUTER_REF` (built from source) |
 | NIXL | disabled (`WITH_NIXL=0`) |
+
+All K3 source fixes are **baked into the vLLM branch** — the recipe carries **zero
+runtime patchers**. `/app/versions.txt` in the built image records the resolved shas.
 
 ## 1. Build the image (on one node, ~30–60 min)
 
@@ -70,6 +73,7 @@ on both masters, then `Add Prefill`/`Add Decode` in the router log.
 |---|---|---|
 | `K3_WRITE_READBACK` | **1** | RDMA read-after-write barrier — fixes concurrency KV write-race. |
 | per-role backend/cudagraph | prefill mori_HT/eager, decode mori_LL/FULL_AND_PIECEWISE | the working contract |
+| int4-SiTU MoE | `--quantization-config '{"moe":{"weight":"int4_per_group_32"}}'` | AITER_MXFP4_BF16 fast MoE (else ~8× slower MXFP4 emulation) |
 | `MAX_MODEL_LEN` | ≤ 320000 | >320K blows the compile-vs-handshake window |
 | `MAX_NUM_SEQS` | 32 | decode batch |
 | `MAX_NUM_BATCHED_TOKENS` | ≤ 4096 | larger blows the MoE profiling-compile shape |
@@ -88,12 +92,34 @@ python3 perf_sweep.py            # input 8K/16K, output 1k
 
 ## Status & known items (full log in `docs/`)
 
-- **Accuracy: solid.** Single-request NIAH passes; concurrency KV-corruption is fixed by
-  the RDMA readback (`K3_WRITE_READBACK=1`) — every completed request recalls correctly.
+- **Accuracy: solid, including under concurrency.** Two independent fixes, both baked into
+  the pinned vLLM branch:
+  1. **KV write-race (RDMA readback, `K3_WRITE_READBACK=1`)** — an RDMA read-after-write
+     barrier forces written KV globally visible before the request is released to decode.
+  2. **con>1 KDA state-recycle (issue #35219)** — KDA (mamba) recurrent/conv state blocks
+     were never zeroed when recycled, so a new request inherited a finished request's
+     finite-but-wrong state → sustained con=32 recall fell to ~65%. `needs_kv_cache_zeroing`
+     is True for mamba but two `isinstance(AttentionSpec)` gates excluded `MambaSpec`. The
+     branch adds a pure-torch zero-on-recycle channel for mamba blocks (+ a de-alias clone
+     of the KDA decode state-index view, a MoRI-EP dispatch trim, and a MoRIIO all-group
+     KV-completion gate). Runs eager, outside cudagraph capture; int4-SiTU + decode
+     `FULL_AND_PIECEWISE` intact.
+
+  **Validated (MI325X 2P2D EP16):** NIAH @50K con=1/8/16/32 = **57/57 = 100%**; con=32 @6K
+  **9 consecutive runs @100%**; con=1 permanence after sustained con=32 hammering = **12/12
+  = 100%** (no residual poison). Pre-fix con=32 swung 42–83% (~65% avg).
+
 - **Perf — open:** a ~150 s per-decode-wave latency **floor** (amortizes across
   concurrency: con16 ≈ con1 wall). Prime suspect: MoRI `624002c8` InterNodeV1LL decode
   all2all warmup. See `docs/OPT_ROADMAP.md` (all2all A/B, rocprof, MoRI bisect; plus
   prefill/decode context-parallelism and chunked-prefill tuning).
+
+- **Known-separate (not this fix): 100K+ MoRIIO transfer stall.** Very-long-context (≥100K)
+  requests can stall on a MoRIIO `BatchRead()` argument mismatch in the KV transfer path
+  (`moriio_engine.py`); the serve recovers for normal-length contexts afterward. Tracked
+  separately from the accuracy fixes above (50K exercises the same con=32 recycle path and
+  passes 100%).
+
 - **Cosmetic:** kimi_k3 reasoning parser can leak `<|open|>response<|sep|>` into `content`
   on `thinking:false` (needle still recalled; use `max_tokens>=256`).
 
