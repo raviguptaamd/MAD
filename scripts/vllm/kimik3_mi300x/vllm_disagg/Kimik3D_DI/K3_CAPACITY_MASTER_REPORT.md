@@ -103,6 +103,59 @@ Same image, same recipe, same benchmark scripts + warmup on both → apples-to-a
 
 ---
 
+## 3b · How the parallelism works — attention (TP×DP) vs experts (EP16), and why it's forced
+
+The 2P/2D EP16 shape is not one knob — it is **two different parallelism strategies applied to two
+differently-shaped weight populations at once**, because Kimi-K3 has two of them.
+
+| Population | Size | Grows with context? | Parallelized by |
+|---|---:|---|---|
+| **Routed experts** (896, MXFP4) | **1347.2 GiB** (92.7%) | no | **Expert Parallel (EP16)** — sharded |
+| **Everything else** (MLA+KDA attention, shared experts, embeddings, norms — bf16) | **106.5 GiB** | attention KV grows | **Tensor + Data Parallel (TP2×DP8)** |
+
+The experts are 92.7% of the bytes and the part that *can* be cleanly sharded; the 106.5 GiB bf16
+remainder cannot be sharded by EP and is paid **per rank** under any model-replicating layout. Those
+two facts dictate the whole topology.
+
+**Expert Parallelism (EP16) — sharding the 1.35 TiB of experts.** Each MoE layer routes every token
+to top-16 of 896 experts. Under EP16 the experts are partitioned across **16 GPUs** (56/GPU); no GPU
+holds more than 1/16 of them. That shrinks the resident weight footprint from a 1453.7 GiB full replica
+to something a node holds *with room left for a KV pool*. The cost is the **all-to-all** (dispatch →
+expert GEMM → combine), which **MoRI-EP** implements. Two consequences seen throughout the study: (1)
+the EP16 group of 16 GPUs **spans both prefill and decode pools**, so the 4-role set must co-start and
+decode can never restart alone (orphaned all-to-all deadlocks); (2) the per-wave floor **C0** (§4) *is*
+the fixed cost of one all-to-all barrier round-trip — platform-independent because it's a fabric
+collective, not compute.
+
+**Attention Parallelism (TP2×DP8) — the part EP can't shard.** The 106.5 GiB of attention/dense weight
+is handled as **TP2** (each attention matrix split across 2 GPUs → a pair cooperatively holds one
+attention stack) × **DP8** (8 independent attention lanes → 8× attention throughput). `TP2×DP8 = 16`
+ranks per role — exactly the EP16 width, so the same 16 GPUs do attention-as-TP2×DP8 and
+experts-as-EP16 at once. Why not the alternatives: **TP16** makes the attention GEMMs too small and
+turns every layer's reduction into a 16-way collective (comm-bound); **DP16** pays the 106.5 GiB bf16
+remainder ×16 and fragments the KV pool per-rank — the capacity trap the sizing analysis found, where a
+**TP1/DP16** layout (190.7 GiB/rank) *fits MI325X's 256 GB but OOMs MI300X's 192 GB* (the §5 headline
+divergence). **TP2/DP8 (137.4 GiB/rank) fits both**, which is why it is the portable, apples-to-apples
+choice.
+
+**Why the model doesn't fit one node — the arithmetic that starts it all.** One MI300X node
+(8×192 GB ≈ 1504 GiB usable) vs the 1453.7 GiB checkpoint leaves **~50 GiB** for KV + activations +
+MoRI heap across the whole node — effectively zero. You therefore cannot hold the whole model on one
+node with a usable KV budget, and certainly cannot run a 1-prefill/1-decode split where each role owns
+a full replica. The disaggregated wide-EP design resolves it: **EP16 shards the 1.35 TiB of experts so
+no GPU ever holds a second copy**, and the freed HBM becomes the KV pool; 2P/2D then separates prefill
+(compute-bound bursts) from decode (latency-bound token streams) while sharing the sharded experts over
+the fabric.
+
+**How this feeds capacity planning (§4–§5).** Once the topology is fixed at TP2×DP8→EP16, the memory
+left for KV is what the study measures: MI325X (256 GB) → ~20 GB KV pool → rides the concurrency floor
+to **con256**; MI300X (192 GB) → ~4 GB KV pool → saturates at **con64**, ~4–5× earlier, matching the
+KV-pool ratio. So the parallelism choice is upstream of every number: **EP16 makes the model *fit*;
+TP2×DP8 makes attention *portable* across both memory envelopes; and the memory those choices leave
+over is the KV pool that sets the concurrency ceiling.**
+
+---
+
 ## 4 · The capacity model (the math the blog computes)
 
 Decode wall-time per request wave:
@@ -288,8 +341,24 @@ verified on disk (`results/mi300x_cx7/02_accuracy_niah/`, `03_perf/MI300X_SWEEP_
    200K crash. So although vLLM *accepts* max_model_len=262144, the serve **reliably handles only
    ≤100K**.
 
-**Contrast MI325X:** served single-needle NIAH to **300K** (256 GB, ~20 GB KV). The 192 GB
-memory frontier caps usable context at ~1/3 of MI325X on identical model+config.
+**Contrast MI325X — the frontier reaches 900K on the fixed stack.** On the con>1-fixed +
+int4-SiTU stack (`v4-disagg-situ-restore-mambafix`, `MAX_MODEL_LEN=1M`, `KV=40 GB`,
+`FULL_AND_PIECEWISE`), MI325X served single-needle NIAH **coherently across the full
+20K→900K ladder — 7/7 PASS** (depth 0.5, `HELIOTROPE-7492`):
+
+| ctx | 20K | 50K | 100K | 200K | 500K | 750K | 900K |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| latency | 11.8 s | 30.5 s | 50.3 s | 117.4 s | 393.2 s | 710.2 s | 890.1 s |
+| recall | PASS | PASS | PASS | PASS | PASS | PASS | PASS |
+
+This **retires the earlier "320K refused / 300K ceiling" claim for MI325X** — that was the older
+stack pinned at `MAX_MODEL_LEN=320000` with a 20 GB KV budget. Raising the KV budget to 40 GB and
+the model-len to 1M (which the 256 GB envelope affords) lets the growing MLA-latent KV fit all the
+way to 900K. At 900K the prefill-side `k3-readback` RDMA barrier logs non-fatal
+`BatchRead incompatible arguments` warnings (a MoRIIO large-region readback limitation) but falls
+back cleanly — the KV still transfers and the needle recalls at 890 s. So the 192 GB (MI300X) vs
+256 GB (MI325X) memory frontier is the real axis: the same growing-MLA-KV wall bites MI300X at
+~100K and MI325X only near/beyond the ~900K native-context edge.
 
 **NIAH on PIECEWISE decode is accurate** where it fits: MI300X **9/9 PASS** within the 10K window
 (2K/4K/8K × depths 0.1/0.5/0.9), correct recall, finish=stop, ~50-70 s/req — the accuracy is solid,
@@ -323,20 +392,45 @@ in `results/*/06_profiles/`. **Not yet run to completion** — the floor is alre
 
 ---
 
-## 11 · The correctness fix that makes concurrency safe — RDMA read-after-write barrier
+## 11 · The two correctness fixes that make concurrency safe
 
-The single functional upstream code change this effort produced (vLLM `2cbc11cd7`, branch `v4-disagg`,
-+63 lines / 2 files). **Bug:** in MoRIIO WRITE mode, decode admits a request when the ZMQ `write_done`
-arrives, but on RoCE a completed RDMA-WRITE does **not** guarantee the KV is visible in the *receiver's*
-HBM → under concurrency, decode read stale/garbage KV (distinct-needle NIAH con=8 recalled 3/8, garbled).
-**Fix:** after writes complete and before `write_done`, issue a tiny RDMA **read of every written region**
-(`readback_targets`, capped 64) — a read-after-write to the same session forces prior writes globally
-visible (deterministic vs a guessed `K3_WRITE_FENCE` sleep). Gated `K3_WRITE_READBACK=1`. Progression:
-baseline 3/8 → fence-delay 6/8 → single-region readback 6/8 → **multi-region readback: garbage GONE**,
-every completing request recalls correctly. Files: `moriio_engine.py` (readback loop in
-`_finalize_if_complete` + stash in `write_kv_layer`), `moriio_common.py` (`readback_targets`/
-`readback_session` on `RemoteAllocInfo`). **This is what makes the con256 envelope real rather than
-paper** — K3 sharpens it because the handoff ships both MLA latent KV *and* KDA recurrent state.
+Making distinct-needle recall correct **under concurrency** took two independent fixes, both now baked
+into the pinned vLLM branch `v4-disagg-situ-restore-mambafix` (`206fffe`). They live on different axes —
+one in the KV *transfer*, one in the KDA *state* — and the envelope in §5 is only trustworthy with both.
+
+### 11a · KV write-race — RDMA read-after-write barrier
+
+**Bug:** in MoRIIO WRITE mode, decode admits a request when the ZMQ `write_done` arrives, but on RoCE a
+completed RDMA-WRITE does **not** guarantee the KV is visible in the *receiver's* HBM → under concurrency,
+decode read stale/garbage KV (distinct-needle NIAH con=8 recalled 3/8, garbled). **Fix:** after writes
+complete and before `write_done`, issue a tiny RDMA **read of every written region** (`readback_targets`,
+capped 64) — a read-after-write to the same session forces prior writes globally visible (deterministic
+vs a guessed `K3_WRITE_FENCE` sleep). Gated `K3_WRITE_READBACK=1`. Progression: baseline 3/8 → fence-delay
+6/8 → single-region readback 6/8 → **multi-region readback: garbage GONE**. Files: `moriio_engine.py`
+(readback loop in `_finalize_if_complete` + stash in `write_kv_layer`), `moriio_common.py`. Also hardened
+the completion gate to require **all** KV group transfers to succeed (`n_ok == n_total`), not just the
+last-appended one (`moriio_connector.py`).
+
+### 11b · con>1 KDA state-recycle — zero mamba blocks on reallocation (issue #35219)
+
+After 11a, a subtler corruption remained: under **sustained** concurrency (con=32) recall fell to ~65%
+and **self-healed at con=1** — the tell of state accumulation, not a transfer race. **Root cause:** K3's
+KDA (mamba) layers keep a per-slot recurrent+conv state in the KV-cache pool; vLLM zeroes freshly
+(re)allocated blocks *for attention* but a pair of `isinstance(spec, AttentionSpec)` gates **excluded
+`MambaSpec`** — so a recycled KDA slot handed a finished request's finite-but-wrong state to a new one,
+which the contractive gate then amplified. vLLM's own `needs_kv_cache_zeroing` is True for mamba (the
+docstring cites this exact "state read before fully written" hazard, #35219) but the gates disabled it.
+**Fix:** a separate pure-torch zero-on-recycle channel for mamba blocks (`state[new_ids]=0`), routed off
+the attention byte-kernel's namespace, run eager in the decode worker's `update_requests` (V2 model
+runner) — **outside cudagraph capture, so `FULL_AND_PIECEWISE` and the int4-SiTU MoE are untouched.**
+Plus a de-alias `.clone()` of the KDA decode state-index view and a MoRI-EP dispatch-trim. **Validated:**
+distinct-needle NIAH @50K con=1/8/16/32 = **57/57 = 100%**; con=32 @6K 9 consecutive runs @100%; con=1
+after sustained con=32 hammering = **12/12** (no residual poison). Pre-fix con=32 swung 42–83% (~65%).
+
+**Why K3 sharpens both:** the prefill→decode handoff ships **both** the MLA latent KV *and* the KDA
+recurrent state, so K3 exercises a transfer hazard (11a) *and* a recurrent-state hazard (11b) that a
+pure-attention model never sees. Together they are **what makes the con256 envelope in §5 real rather
+than paper** — every completing request at every concurrency now recalls its own needle.
 
 ## 12 · Config levers that did NOT fix the ~150 s floor (ruled-out table)
 
