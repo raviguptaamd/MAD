@@ -10,6 +10,11 @@ A *computable* capacity model for 1.4 TB Kimi-K3-MXFP4 served 2P/2D disaggregate
 agentic trace (AgentX). Decode obeys `wall = C0 + k·OSL` — a fixed floor + per-token slope — so
 concurrency is nearly free until the KV pool saturates.
 
+The pinned vLLM branch (`raviguptaamd/vllm@206fffe`, `v4-disagg-situ-restore-mambafix`) carries
+the **con>1 accuracy fix** (KDA mamba state-recycle zeroing, issue #35219) on top of the
+int4-SiTU base — so these capacity numbers are measured on a serve that is **correct under
+concurrency**, not just fast. See §4 for the accuracy check.
+
 ## 1. Build the image
 ```bash
 docker build -f Dockerfile.kimik3_disagg -t kimik3-wideep-disagg:v4 .
@@ -38,7 +43,9 @@ cd study/mi300x_cx7/launcher   && bash slurm_launch.sh
 ```
 Fixed serving contract both clusters: prefill = `mori_high_throughput` + cudagraph NONE (eager),
 decode = `mori_low_latency` + cudagraph FULL_AND_PIECEWISE, `K3_WRITE_READBACK=1`, JIT cache
-host-mounted, `thinking=false` for benchmarks.
+host-mounted, `thinking=false` for benchmarks. Proven-safe knobs: `MAX_MODEL_LEN=320000`,
+`MAX_NUM_SEQS≤32`, `MAX_NUM_BATCHED_TOKENS≤4096`, `KV_CACHE_MEMORY_BYTES=20e9`, int4-SiTU MoE via
+`--quantization-config '{"moe":{"weight":"int4_per_group_32"}}'`.
 
 **Fabric gotchas** (the ones that cost real debugging): input var is `RDMA_DEVICES` (not
 `MORI_RDMA_DEVICES`), `IB_GID_INDEX` (not `NCCL_IB_GID_INDEX`). Passing Thor2's `rdma0-7` on the
@@ -57,12 +64,24 @@ python study/shared/bench/perf_sweep.py     # perf points
 `study/shared/capacity_model.py` computes the `C0 + k·OSL` prediction + the KV-pool knee.
 
 ## 4. Expected results (from the report)
+
+**Accuracy under concurrency (the con>1 fix — check this first):**
+- NIAH @50K, distinct needle per request, con=1/8/16/32 → **57/57 = 100%**.
+- con=32 @6K → **100%** across 9 consecutive runs; con=1 after sustained con=32 hammering →
+  **12/12 = 100%** (no residual state poison). Pre-fix con=32 swung 42–83% (~65% avg).
+- int4-SiTU (AITER_MXFP4_BF16) + decode `FULL_AND_PIECEWISE` intact.
+
+**Capacity / throughput:**
 - **MI325X (256 GB, ~20 GB KV):** rides the floor to **con256** — wall 614→688 s (+12%) while
   throughput 0.2→47.6 tok/s (**238×**). con512 = KV wall.
 - **MI300X (192 GB, ~4 GB KV):** rides to **con64** (60×), saturates **4× earlier** (matches the
   ~4 GB vs ~20 GB KV-pool ratio). Faster per request, lower concurrency ceiling.
 - **Memory frontier:** MI300X reliable-NIAH ceiling ~100K vs MI325X 300K.
 - **AgentX** real-trace ITL matches the OSL slope on each platform (floor is physical, not fitted).
+
+> Known-separate: ≥100K contexts can stall on a MoRIIO `BatchRead()` transfer mismatch
+> (unrelated to the con>1 accuracy fix; serve recovers for normal ctx). 50K exercises the same
+> con=32 recycle path and passes 100%.
 
 ## 5. Layout
 ```
