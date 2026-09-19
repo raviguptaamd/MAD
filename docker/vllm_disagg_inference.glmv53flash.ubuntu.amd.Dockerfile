@@ -205,16 +205,20 @@ ARG VLLM_REPO=https://github.com/raviguptaamd/vllm.git
 # resolved. models.yaml's decode-cudagraph table predates this pin: those numbers were
 # measured on d723eb305e and have not been re-measured on it.
 #
-# What the ref carries: the 10 GLM DSA commits (per-req-ctx metadata key #47766, DSA
-# indexer KV transfer, invalid-token sentinel, MoRI EP sizing knobs, and the EP32
-# combine() original-topk fix) on top of upstream vLLM d626108b (2026-08-20).
-# GLM-5.3-Flash: this ref carries the MoRIIO MLA KV block-mapping fix
-# (moriio_layout.py / moriio_connector.py) — the correctness fix for disagg recall.
-# Pinned to commit 9a4642006 on branch glm53-flash-moriio-mla-fix of the fork above.
+# What the ref carries (branch glm53-flash-disagg-upstream, based on CURRENT UPSTREAM
+# vllm-project/vllm @ 3192898754 — which already ships the Glm5Next (GLM-5.3-Flash)
+# model, the MoRIIO connector, SupportsHMA and the normalized MLA KV layout): the ROCm
+# GLM-5.3-Flash-FP8 disaggregated-serving fixes not yet in upstream —
+#   1. moriio_layout: accept the ROCm AITER sparse-MLA / packed-latent cache geometry;
+#   2. rocm_aiter_mla_sparse: record_logical_topk_ready (ROCm sparse-MLA mixin gap);
+#   3. moriio_common/connector: get_port_offset TP-awareness (TP4/DP2 port collision);
+#   4. connector: relaxed HMA block_len/num_blocks guards for hybrid full-alloc groups;
+#   5. connector/engine: per-group KV block routing + deferred-write (MORIIO_DEFER_WRITES=1)
+#      for GLM-5.3-Flash's sliding-window KpoolTail group so WRITE-mode disagg is correct.
 # ONE image serves BOTH configs (TP4 1P/1D and EP8 1P/1D); they differ only in launch
 # env (see scripts/vllm_dissag/glm53_flash/{run_flash_disagg_tp4.sh,orch_ep8.sh}), not
 # in the build. Rebuild a different commit with --build-arg VLLM_REF=<sha>.
-ARG VLLM_REF=c8e6eac83e640a157d30731a22e9acd94e14f963
+ARG VLLM_REF=41644d2afad7  # glm53-flash-disagg-upstream @ raviguptaamd/vllm (glm5next base)
 ENV VLLM_TARGET_DEVICE=rocm \
     PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} \
     MAX_JOBS=${MAX_JOBS}

@@ -1,4 +1,4 @@
-# GLM-5.3-Flash disaggregated — verified recall results (MI355X gfx950 + ionic)
+# GLM-5.3-Flash-FP8 disaggregated — verified recall results (MI355X gfx950 + ionic)
 
 Needle-in-haystack recall, disaggregated 1P/1D over MoRIIO. Needle =
 `The special access code is DELTA-9931.` inserted at a given depth into filler

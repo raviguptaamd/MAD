@@ -1,6 +1,7 @@
-# GLM-5.3-Flash disaggregated (1P/1D) on MI355X (gfx950) + AMD AI NIC (ionic)
+# GLM-5.3-Flash-FP8 disaggregated (1P/1D) on MI355X (gfx950) + AMD AI NIC (ionic)
 
-`GLM-5.3-Flash` (`Glm5NextForConditionalGeneration`) is a DeepSeek-DSA / MLA +
+`GLM-5.3-Flash` (`Glm5NextForConditionalGeneration`), **FP8** (E4M3, dynamic
+activation scaling), is a DeepSeek-DSA / MLA +
 KDA-linear-attention hybrid. This recipe serves it **disaggregated (prefill /
 decode split)** over the **MoRIIO** KV-transfer connector, with verified
 needle-in-haystack recall (see `RESULTS.md`).
