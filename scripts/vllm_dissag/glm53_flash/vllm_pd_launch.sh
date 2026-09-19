@@ -60,8 +60,12 @@ _compcfg_write() {  # $1=role $2=mode -> writes file, echoes path
 }
 PF_CFG_FILE="$(_compcfg_write prefill "$PREFILL_CUDAGRAPH_MODE")"
 DC_CFG_FILE="$(_compcfg_write decode "$DECODE_CUDAGRAPH_MODE")"
+# NOTE: the serve command runs inside docker `bash -lc "..."` (double-quoted), so the
+# compilation-config JSON must be wrapped in SINGLE quotes to survive as one argv token
+# -- double quotes here collide with the outer -lc "..." and expose the JSON's own quotes
+# to the shell, crashing vLLM arg parsing (only latent in EAGER, where PF_CC/DC_CC are empty).
 if [ "${EAGER:-1}" = "1" ]; then PF_CC=""; DC_CC=""
-else PF_CC="--compilation-config \"$(cat $PF_CFG_FILE)\""; DC_CC="--compilation-config \"$(cat $DC_CFG_FILE)\""; fi
+else PF_CC="--compilation-config '$(cat $PF_CFG_FILE)'"; DC_CC="--compilation-config '$(cat $DC_CFG_FILE)'"; fi
 
 # MODE: tp4 / tp8 = tensor-parallel, MoRIIO KV only. ep = DP + expert-parallel + a2a.
 MODE="${MODE:-tp4}"
