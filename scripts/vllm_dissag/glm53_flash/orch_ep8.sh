@@ -23,7 +23,7 @@ set -uo pipefail
 PF_JOB="${PF_JOB:?prefill node handle}"; DC_JOB="${DC_JOB:?decode node handle}"
 PF_IP="${PF_IP:?prefill node ip}"; DC_IP="${DC_IP:?decode node ip}"
 REMOTE_DIR="${REMOTE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-IMG="${IMG:?image from docker/vllm_disagg_inference.glmv53flash...Dockerfile}"
+IMG="${IMG:-rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix}"  # base image; launcher mounts ./patches/ overlays
 MODEL="${MODEL:?GLM-5.3-Flash weights on the nodes}"
 ROUTER_BIN="${ROUTER_BIN:?vllm-router binary on the nodes}"
 PROXY_PING="${PROXY_PING:-36390}"

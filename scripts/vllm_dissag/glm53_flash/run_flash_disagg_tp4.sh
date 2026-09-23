@@ -5,8 +5,16 @@
 # correct order, warms the handshake, and runs a recall smoke test.
 #
 # WHAT THIS PROVES: disagg KV-transfer with the MLA kernel-block-scale fix
-# (moriio_layout.py) -> correct recall (exact needle retrieval to ~10K tokens;
-# >10K has a known tail_cache follow-up, see NOTES).
+# (moriio_layout.py) + per-group cross-chunk KV accumulation (moriio_connector.py)
+# -> correct needle retrieval to 871K tokens (near the model's max_model_len),
+# all needle depths. See RESULTS.md for the full grid.
+#
+# RECIPE NOTE: prefill uses CHUNKED prefill (--enable-chunked-prefill
+# --max-num-batched-tokens 16384). Chunked prefill both (a) keeps every chunk's
+# per-group KV (the connector accumulates blocks across chunks) and (b) avoids
+# the single-chunk Triton compile wall (<~780K), so it recalls correctly all the
+# way to max_model_len. (Single-chunk --max-num-batched-tokens>=max-model-len
+# also works but caps ~100K on VRAM/compile; chunked supersedes it.)
 #
 # USAGE (from a host that can `spur exec` the jobs):
 #   PF_JOB=6409 DC_JOB=6410 PF_IP=10.245.155.8 DC_IP=10.245.156.221 \
@@ -19,8 +27,8 @@ set -uo pipefail
 # This orchestrator drives the two legs over `spur exec <job-id>` (this cluster's
 # per-node exec). On a different cluster, replace `drive()` with your own remote
 # exec (ssh, srun, ...). The per-leg env below is the portable part -- it is what
-# vllm_pd_launch.sh consumes; the fix itself is in the image (VLLM_REF), so there
-# are NO source overlays here.
+# vllm_pd_launch.sh consumes; the fix set is the ./patches/ overlays the launcher
+# mounts onto the base image (OVERLAYS=1, default).
 PF_JOB="${PF_JOB:?prefill node handle (spur job id, e.g. 6409)}"
 DC_JOB="${DC_JOB:?decode  node handle (spur job id, e.g. 6410)}"
 PF_IP="${PF_IP:?prefill node ip}"
@@ -28,7 +36,7 @@ DC_IP="${DC_IP:?decode  node ip}"
 # Repo path of the launcher, INSIDE the node's filesystem (default: this dir on a
 # shared mount). Override REMOTE_DIR to wherever this recipe dir is on the nodes.
 REMOTE_DIR="${REMOTE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-IMG="${IMG:?container image built from docker/vllm_disagg_inference.glmv53flash...Dockerfile}"
+IMG="${IMG:-rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix}"  # base image; launcher mounts ./patches/ overlays
 MODEL="${MODEL:?path to GLM-5.3-Flash weights on the nodes}"
 ROUTER_BIN="${ROUTER_BIN:?path to the vllm-router binary on the nodes}"
 PROXY_PING="${PROXY_PING:-36382}"
@@ -41,7 +49,7 @@ ROUTER="http://${PF_IP}:10001"
 
 # Portable per-leg env. GPUUTIL 0.5 (VRAM headroom), MoRIIO KV disagg, TP4.
 COMMON_ENV="GPUUTIL=0.5 SPARSE_IDX_MB=512 EAGER=1 MORIIO_DEFER_WRITES=1 \
-MORI_NO_ATOMIC_MR=1 KV_DTYPE=auto BLOCK_SIZE=4 MAXLEN=262144 MODE=tp4 \
+MORI_NO_ATOMIC_MR=1 KV_DTYPE=auto BLOCK_SIZE=4 MAXLEN=940000 MODE=tp4 \
 IMG=$IMG MODEL=$MODEL WORKDIR=$WORKDIR PROXY_IP=$PF_IP DECODE_IP=$DC_IP PROXY_PING=$PROXY_PING $INFRA_ENV"
 
 drive(){ local j="$1"; shift; timeout "${TO:-90}" spur exec "$j" -- bash -lc "$*" </dev/null 2>&1 | tail -3; }
@@ -67,12 +75,12 @@ drive "$PF_JOB" "cd $REMOTE_DIR && ROLE=proxy MODE=tp4 ROUTER_DP_LOCAL=1 ROUTER_
 
 echo "=== [2] DECODE first (order matters: prefill handshakes to decode) ==="
 drive "$DC_JOB" "cd $REMOTE_DIR && ROLE=decode $COMMON_ENV HOST_IP=$DC_IP \
-  EXTRA_ARGS='--max-num-seqs 64 --enforce-eager --cudagraph-capture-sizes 1 2 4 8 16 32 64 128 256' \
+  EXTRA_ARGS='--max-num-seqs 256 --enforce-eager --cudagraph-capture-sizes 1 2 4 8 16 32 64 128 256' \
   bash vllm_pd_launch.sh"
 
-echo "=== [3] PREFILL second (single-chunk prefill: --max-num-batched-tokens >= max-model-len) ==="
+echo "=== [3] PREFILL second (chunked prefill: keeps per-chunk KV + dodges compile wall) ==="
 drive "$PF_JOB" "cd $REMOTE_DIR && ROLE=prefill $COMMON_ENV HOST_IP=$PF_IP \
-  EXTRA_ARGS='--max-num-seqs 64 --enforce-eager --max-num-batched-tokens 262144' bash vllm_pd_launch.sh"
+  EXTRA_ARGS='--max-num-seqs 256 --enforce-eager --enable-chunked-prefill --max-num-batched-tokens 16384' bash vllm_pd_launch.sh"
 
 echo "=== [4] WAIT for both legs (weights ~5-6 min each) ==="
 wait_ready "$DC_JOB" decode  || exit 1

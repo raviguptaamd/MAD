@@ -19,19 +19,77 @@ in launch env, not in the build):
 Disaggregated inference splits prefill and decode onto separate GPUs/nodes and
 ships the KV cache between them. On this stack the KV hop runs over **MoRIIO**
 (mori's RDMA connector) on **ionic** NICs. Getting GLM-5.3-Flash to serve
-disaggregated with **correct long-context recall** took two fixes:
+disaggregated with **correct long-context recall** took two connector code fixes:
 
-1. a **real code bug** in the MoRIIO connector's MLA KV block-mapping (garbage
-   recall — decode read zero KV), and
-2. a **launch-time knob** (single-chunk prefill) so prompts longer than one
-   prefill chunk transfer their whole KV.
+1. the MoRIIO connector's **MLA KV block-mapping** (garbage recall — decode read
+   zero KV), and
+2. the connector's **cross-chunk KV accumulation** — under chunked prefill it
+   must keep every chunk's per-group blocks, not just the last chunk's.
 
-With both applied: **exact needle recall to 100K tokens (TP4)** and **~28K
-(EP8)**, all needle depths. Details below.
+With both applied and **chunked prefill** as the recipe: **exact needle recall to
+871K tokens (TP4)** — near the model's `max_model_len` — all needle depths. (EP8:
+see RESULTS.md.) Details below.
 
-**Only one subcomponent changed to fix this: vLLM.** Everything else in the image
-(mori, aiter, vllm-router, base) is pinned unchanged at the same refs the proven
-GLM-5.1 disagg image used. See "What's in the image" below.
+### How this recipe is delivered (READ THIS)
+The **currently-proven, reproducible** recipe = a pinned **base image** plus a set
+of **11 Python overlays** bind-mounted at container start by `vllm_pd_launch.sh`
+(`OVERLAYS=1`, the default). The overlays live in `./patches/` (see
+`patches/README.md` for the file→destination manifest) and are the verified
+connector / model / aiter fixes. This is what was measured to 871K, in MoRI
+**WRITE** mode, on gold pair 014↔021.
+- **Base image:** `rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix` (Dockerhub).
+- **Overlays:** the 11 files in `./patches/` (connector per-group WRITE routing +
+  CHUNKFIX, layout, indexer, glm5next attn, hybrid-KV attn_utils, gfx950 aiter
+  kernels, dynamo/inductor guard).
+
+### Self-contained image (overlays + mori baked in — no runtime .so mounts)
+For a single shippable artifact, `docker/vllm_disagg_inference.glm53flash.overlay.amd.Dockerfile`
+starts `FROM` the proven base image and **(a) rebuilds mori** from the fork branch
+that carries the ionic fixes (atomic-MR strip + HIP-device restore) and **(b) COPYs
+the 11 sha256-verified overlays** into site-packages. So the image itself carries
+the ionic mori strip — **no `MORI_PATCHED` / shared-`.so` mount needed at runtime**.
+Build (context = this recipe dir) and run with `OVERLAYS=0`:
+```
+docker build -f docker/vllm_disagg_inference.glm53flash.overlay.amd.Dockerfile \
+  -t rocmshared/vllm-glm53-flash:glm53-flash-disagg-v2 \
+  scripts/vllm_dissag/glm53_flash/
+# then serve with the built image, no runtime overlays, no mori mount:
+IMG=rocmshared/vllm-glm53-flash:glm53-flash-disagg-v2 OVERLAYS=0 \
+INFRA_ENV="GLIBC_SWAP=1 HOSTLIBS=<glibc-2.39 closure dir> AITER_KSPLIT=1" \
+  ... bash run_flash_disagg_tp4.sh
+```
+Verified live on gold pair 014↔021, `OVERLAYS=0`, **no MORI_PATCHED**, MoRI WRITE
+mode: exact `DELTA-9931` recall at 8K (depths 0.1/0.5/0.9), 60K, and 400K tokens
+(433K prompt, TTFT ~20s). The baked mori is confirmed to carry the strip
+(`libmori_application.so`/`libmori_cco.so` contain `MORI_IO_DISABLE_ATOMIC_MR`,
+absent from the base image's mori) and `MORI_IO_DISABLE_ATOMIC_MR=1` is baked ON.
+
+The mori fork branch (`raviguptaamd/mori:ionic-atomic-mr-strip`, the 2 ionic fixes
+rebased onto ROCm/mori v1.2.3) is also proposed upstream — see `MORI_PR_DRAFT.md`.
+
+**Two host-infra pieces still required at launch** (node-specific, cannot be
+baked):
+1. `GLIBC_SWAP=1 HOSTLIBS=<dir>` — the node's ionic libibverbs **provider**
+   (`libionic-rdmav34.so`) requires **glibc ≥ 2.38**; the image ships 2.35, so
+   without the host glibc-2.39 closure the provider fails to load → 0 ionic devices
+   → mori aborts `availDevices.size() > 0`. (Host-specific — the closure is the
+   node's own glibc; it can't be portably baked.)
+2. `AITER_KSPLIT=1` **or a warm aiter JIT cache** — the CK-2-stage MoE `.so` is
+   JIT-built on first use (not baked). Cold, one split-k variant fails to compile on
+   gfx950 (`half_t`→`__half` in the pinned CK) and TP workers race the build baton.
+   `AITER_KSPLIT=1` avoids the broken split-k path; a warm `jitcache_*/aiter/`
+   avoids the race entirely (the `.so` is portable across identical gfx950 nodes).
+   Baking prewarmed kernels into the image is a further follow-up.
+
+> The earlier `glm53-flash-disagg-overlays-v1` tag (overlays baked, mori NOT) also
+> works but additionally needs `MORI_PATCHED=1 MORI_SO_DIR=<atomic-stripped mori .so>`
+> at launch. `v2` supersedes it by baking mori in.
+
+> A **truly from-source** image (fixes committed into a vLLM fork, no clrfix base)
+> is tracked as a separate FOLLOW-UP — fork `raviguptaamd/vllm` branch
+> `glm53-flash-disagg-v0.30` is the WIP; its depth-recall is still open. Until it's
+> verified, the two recipes above (overlays, or overlays baked onto the proven
+> base) are the proven ones.
 
 ---
 
@@ -66,14 +124,21 @@ group-block count (`min` blocks over all kv_caches). Files:
 `compute_block_transfer_offsets`) and `.../moriio_connector.py` (compute
 `_num_group_blocks` once at `register_kv_caches` and pass it in).
 
-**Second ceiling (fix #2).** With fix #1, recall was exact up to ~16K then broke.
-Discriminator runs showed the connector transfers only the **final prefill
-chunk's** KV (a known limitation in its own code). With the default chunk
-(`max_num_batched_tokens` 16384) any prompt longer than that loses its earlier
-chunks' KV on the decode side. Making prefill **single-chunk**
-(`--max-num-batched-tokens >= max-model-len` on the prefill leg) transfers the
-whole prompt's KV. Recall then held to 100K (TP4). This is a **launch arg, not
-code** — documented per-leg in the orchestrators.
+**Second ceiling (fix #2).** With fix #1, recall was exact up to ~one prefill
+chunk (~16-28K) then broke at *every* needle depth — the tell that it is not a
+"late positions" problem but "everything past chunk 1 is missing." Under chunked
+prefill the connector must accumulate **each chunk's per-group blocks** across the
+whole prompt and hand the full per-group block list to the write path on the final
+chunk; the earlier code froze that per-group map at chunk 1, so a multi-chunk
+prompt transferred only chunk-1 KV. The fix threads the accumulated per-group
+block list (`_reqs_need_save` → cross-chunk accumulation in `build_connector_meta`
+→ `local_block_ids[group_idx]` per layer in `_write_blocks_for_req`) so every
+chunk's KV lands on decode. With this, **chunked prefill**
+(`--enable-chunked-prefill --max-num-batched-tokens 16384`) recalls exactly to the
+model's `max_model_len` (871K tokens verified, TP4). Chunked prefill is also
+strictly better than the earlier single-chunk workaround: single-chunk
+(`--max-num-batched-tokens >= max-model-len`) worked but capped ~100K on VRAM and
+hit the single-chunk Triton compile wall (<~780K); chunked prefill dodges both.
 
 **Dead ends ruled out (so nobody re-chases them):** the DSA tail_cache was a red
 herring (colocated recalled without it); fp4 GEMM was not the culprit
@@ -82,35 +147,42 @@ proves the model is fine on gfx950).
 
 ---
 
-## What makes disagg correct (the two fixes, in brief)
+## What makes disagg correct (the fixes, in brief)
 
-1. **MoRIIO MLA KV block-mapping fix** (vLLM code) — carried **in-source** by the
-   pinned `VLLM_REF` in the Dockerfile. There is no runtime patcher. An image
-   without it boots and serves but returns silently wrong long-range output.
-2. **Single-chunk prefill** (launch arg) — `--max-num-batched-tokens >=
-   --max-model-len` on the **prefill** leg. Verified exact recall to 100K (TP4).
+The connector / model / aiter fixes are delivered as the **11 overlays in
+`./patches/`** (bind-mounted by the launcher). The two that make long-context
+recall correct:
+1. **MoRIIO MLA KV block-mapping + per-group WRITE routing** (`patches/moriio_connector_hma.py`
+   + `moriio_engine.py` + `moriio_layout.py`) — without it decode reads zero/wrong
+   KV → silently wrong long-range output.
+2. **Cross-chunk KV accumulation** (same connector, `# CHUNKFIX`) — keeps every
+   chunk's per-group blocks under chunked prefill. With it, the recipe uses
+   **chunked prefill** (`--enable-chunked-prefill --max-num-batched-tokens 16384`)
+   for exact recall to `max_model_len` (871K verified, TP4, MoRI WRITE mode).
+The other overlays are load-bearing too (hybrid-KV `attn_utils.py`, DSA `indexer.py`,
+`glm5next` attention, gfx950 aiter kernels, the dynamo/inductor `usercustomize.py`
+guard). See `patches/README.md`.
 
-## What's in the image (subcomponents)
+## What's in the stack (subcomponents)
 
-| Subcomponent | Pin | Changed for GLM-5.3? |
+| Subcomponent | Pin | GLM-5.3 fixes delivered via |
 |---|---|---|
-| **vLLM** | `raviguptaamd/vllm @ 9a4642006` (branch `glm53-flash-moriio-mla-fix`) | **YES — the MLA KV fix** |
-| mori | `ROCm/mori @ 624002c897a3` | no (same as proven GLM-5.1; already strips the ionic-rejected atomic-MR bit) |
-| aiter | `raviguptaamd/aiter @ 624e43586b` | no |
-| vllm-router | `raviguptaamd/router @ 82dc9811` | no |
-| base image | `rocm/vllm-dev:ci_base-dedbf6be…` | no |
-| arch target | `gfx950` (MI355X) | corrected from GLM-5.1's gfx942 |
+| **base image** | `rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix` (Dockerhub) | — (carries mori atomic-MR strip + aiter-tip + clr fix) |
+| **vLLM** | base image's vLLM **+ `./patches/` overlays** | **the 8 vLLM overlays** (MoRIIO connector/engine/common/layout, attn_utils, indexer, glm5next attn, usercustomize) |
+| **aiter** | base image's aiter **+ `./patches/` overlays** | the 3 aiter overlays (gfx950 a8w8 / fused-moe / a16wfp4 kernels) |
+| **mori** | in base image (ionic atomic-MR strip) | — |
+| vllm-router | `raviguptaamd/router @ 82dc9811` (= PR #223) | — |
+| arch target | `gfx950` (MI355X) | — |
 
-Because the pinned mori already carries the atomic-MR strip (GLM-5.1 validated it
-on ionic with **no** runtime overlay), the **image built from this Dockerfile is
-self-contained** — it does not need the dev overlay set the debug image used.
+> A future self-contained image would bake the 11 overlays in-source (fork
+> `raviguptaamd/vllm` branch `glm53-flash-disagg-v0.30` is the WIP base for that).
+> Until it's verified, the base-image + overlays recipe here is the proven one.
 
 ## The 6 bring-up essentials
 
-1. **Image**: build from `docker/vllm_disagg_inference.glmv53flash.ubuntu.amd.Dockerfile`
-   (its `VLLM_REF` fork pin carries the vLLM connector fixes; its `MORI_REF` fork
-   pin carries the ionic mori fixes; arch pinned gfx950). All fixes are in-source —
-   no runtime overlays needed.
+1. **Image + overlays**: pull base `rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix`;
+   the launcher bind-mounts the 11 `./patches/` overlays (`OVERLAYS=1`, default).
+   Serving the base image bare (`OVERLAYS=0`) boots but does NOT recall at depth.
 2. **VRAM headroom** — `GPU_MEMORY_UTILIZATION` 0.5 (TP4) / 0.40 (EP8). Too high
    starves the DSA-indexer Triton code-object load at long context
    (HSA_STATUS_ERROR_OUT_OF_RESOURCES). EP8 also needs
@@ -119,12 +191,13 @@ self-contained** — it does not need the dev overlay set the debug image used.
    the ionic RDMA driver needs `GLIBC_2.38`. The launcher bind-mounts host glibc
    at runtime; no rebuild.
 4. **atomic-MR strip** — ionic rejects `REMOTE_ATOMIC` memory regions (errno
-   14/22). This is **baked into the pinned mori** in the image build; no overlay
-   needed. (The `MORI_PATCHED=1` launcher path exists only for running a
-   host-built patched `.so` set on an image that lacks it.)
-5. **The MLA KV fix** (fix #1 above) — carried by the pinned `VLLM_REF`.
-6. **Single-chunk prefill** (fix #2 above) — `--max-num-batched-tokens` in the
-   prefill leg's launch args.
+   14/22). Baked into the base image's mori. (The `MORI_PATCHED=1` launcher path
+   exists only for running a host-built patched `.so` set on an image that lacks it.)
+5. **The MoRIIO connector fixes** — carried by the `./patches/` overlays (essential #1).
+6. **Chunked prefill** (recipe) — `--enable-chunked-prefill
+   --max-num-batched-tokens 16384` + `--max-num-seqs 256` in the prefill leg's
+   launch args. Correct only because of the connector's cross-chunk accumulation;
+   recalls to `max_model_len` and dodges the single-chunk compile wall.
 
 ## Bring-up ORDER (the launcher is order-sensitive)
 
@@ -155,15 +228,15 @@ none → pick another node.
 
 ## Run it
 
-`vllm_pd_launch.sh` is the per-node, per-role launcher (serves the image as
-built — no source overlays; the fix is in `VLLM_REF`). The two orchestrators
-below drive it on both legs over `spur exec` (this cluster's per-node exec);
-swap `drive()` for your own remote exec (ssh/srun) elsewhere.
+`vllm_pd_launch.sh` is the per-node, per-role launcher; it bind-mounts the 11
+`./patches/` overlays onto the base image (`OVERLAYS=1`, default). The two
+orchestrators below drive it on both legs over `spur exec` (this cluster's
+per-node exec); swap `drive()` for your own remote exec (ssh/srun) elsewhere.
 
 TP4 1P/1D (prefill = node A, decode = node B):
 ```
 PF_JOB=<A_handle> DC_JOB=<B_handle> PF_IP=<A_ip> DC_IP=<B_ip> \
-IMG=<image built from the glmv53flash Dockerfile> \
+IMG=rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix \
 MODEL=<GLM-5.3-Flash weights path on the nodes> \
 ROUTER_BIN=<vllm-router binary path on the nodes> \
 REMOTE_DIR=<path to this recipe dir on the nodes> \
@@ -187,10 +260,10 @@ Alternatively, serve via MAD's standard disagg entry point using the registry:
 A reviewer with two gold-pair nodes and the built image reproduces the whole
 result in ~15 min per config. **One image, both configs.**
 
-**Gate 0 — image is correct.** In the built image:
-`cat /app/versions.txt` shows `VLLM_REF=9a4642006…`; the moriio files carry the
-fix (`grep -R _mla_kernel_blocks_per_group_block` in the installed vLLM returns a
-hit); arch is gfx950.
+**Gate 0 — overlays mounted.** With `OVERLAYS=1` (default), `docker inspect
+vllm_prefill` shows the 11 `./patches/*.py` bind-mounted onto site-packages; the
+base image is `rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix`; arch is gfx950.
+(sha256 of the mounted overlays == the committed `./patches/` set.)
 
 **Gate 1 — TP4 bring-up + short recall.** Pick a gold pair (GID-map above).
 Run `run_flash_disagg_tp4.sh` with the env above. Expect both legs to reach
@@ -198,9 +271,13 @@ Run `run_flash_disagg_tp4.sh` with the env above. Expect both legs to reach
 smoke to print `DELTA-9931` at 500w **and** 8000w. This is the pass/fail gate:
 8000w > one attention group block, so it exercises the block-mapping fix.
 
-**Gate 2 — TP4 long-context needle.** Fire a ~40K-token prompt with the needle
-at depth 0.9 (and 0.1/0.5/0.99); expect `DELTA-9931` at every depth. Optionally
-push to 100K (util 0.5 has headroom). This gate exercises single-chunk prefill.
+**Gate 2 — TP4 long-context needle.** With **chunked prefill**
+(`--enable-chunked-prefill --max-num-batched-tokens 16384`, `MAXLEN=940000`), fire
+multi-chunk prompts with the needle at depths 0.1/0.5/0.9; expect `DELTA-9931` at
+every depth from 30K through **871K tokens** (near `max_model_len`). Prompts over
+`max_model_len` are cleanly rejected (HTTP 400), not mis-recalled. This gate
+exercises fix #2 (cross-chunk KV accumulation) — the multi-chunk case that the
+single-chunk recipe used to sidestep.
 
 **Gate 3 — EP8 bring-up + recall.** On the second gold pair, `orch_ep8.sh`
 (`MODE=ep`, `ROUTER_DP_LOCAL=8`, util 0.40, `SPARSE_IDX_MB=4096`, single-chunk).
@@ -213,8 +290,8 @@ the fix disabled (an image whose `VLLM_REF` predates the fix, or bypass the
 expansion): recall goes garbage at 8000w while short prompts still serve. This is
 the "before" row in `RESULTS.md`.
 
-**Expected results:** `RESULTS.md` — TP4 exact to 100K all depths; EP8 exact to
-~28K all depths.
+**Expected results:** `RESULTS.md` — TP4 exact to **871K tokens** all depths
+(chunked prefill); EP8 per RESULTS.md.
 
 Smoke-only (no gold pair / single check): Gate 1's 8000w recall alone catches the
 block-mapping regression; it is the single most valuable check.
@@ -227,10 +304,11 @@ block-mapping regression; it is the single most valuable check.
 - `scripts/vllm_dissag/models.json` — CI entry `pyt_vllm_disagg_mori_glm-5.3-flash`.
 
 ## Files
+- `patches/` — the 11 verified overlays (connector / model / aiter fixes) + a
+  manifest README. Bind-mounted by the launcher; this is the actual fix set.
 - `vllm_pd_launch.sh` — per-node, per-role launcher (proxy / prefill / decode).
-  Env-driven; no source overlays (fix is in the image). This is the piece both
-  orchestrators call.
-- `run_flash_disagg_tp4.sh` — TP4 1P/1D orchestrator (bring-up order + single-chunk knob).
+  Env-driven; mounts `patches/` onto the base image (`OVERLAYS=1`, default).
+- `run_flash_disagg_tp4.sh` — TP4 1P/1D orchestrator (bring-up order + chunked-prefill recipe).
 - `orch_ep8.sh` — EP8 1P/1D orchestrator (DP8 + allgather/reducescatter MoE dispatch).
 - `README.md` / `RESULTS.md` — this file + the verified NIAH recall matrix
-  (TP4 → 100K, EP8 → ~28K).
+  (TP4 → 871K tokens; EP8 per RESULTS.md).

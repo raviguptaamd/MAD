@@ -1,62 +1,113 @@
 # GLM-5.3-Flash-FP8 disaggregated — verified recall results (MI355X gfx950 + ionic)
 
 Needle-in-haystack recall, disaggregated 1P/1D over MoRIIO. Needle =
-`The special access code is DELTA-9931.` inserted at a given depth into filler
-text; the model is asked to recall it. `OK` = the exact code `DELTA-9931` is
-returned. Greedy (temperature 0). Both fixes applied (MLA KV block-mapping
-in-source + single-chunk prefill).
+`The special access code is DELTA-9931.` inserted at a given depth into varied
+prose filler; the model is asked to recall it. `DELTA-9931` = exact code returned.
+Greedy (temperature 0), `/v1/completions`, MoRI **WRITE** mode. Recipe = base
+image `rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix` + the 11 `../patches/`
+overlays (connector MLA KV block-mapping + per-group WRITE routing + cross-chunk
+KV accumulation, and the model/aiter fixes) mounted by `../vllm_pd_launch.sh`,
+with **chunked prefill** (`--enable-chunked-prefill --max-num-batched-tokens
+16384`, `--max-model-len 940000`, `--max-num-seqs 256`). Re-verified live on gold
+pair 014↔021 (2026-09-22).
 
 ## TP4 1P/1D  (prefill/decode = 4-way TP each, MoRIIO KV, GPU util 0.5)
 
-`--max-num-batched-tokens 262144` (single-chunk to 256K).
+Chunked prefill (`--enable-chunked-prefill --max-num-batched-tokens 16384`),
+`max-model-len 940000`. Verified live on a gold ionic rail pair (014↔021).
 
-| context (words) | prompt tokens | needle depth | result |
-|-----------------|---------------|--------------|--------|
-| 500             | 559           | 0.9          | DELTA-9931 |
-| 8,000           | 8,684         | 0.9          | DELTA-9931 |
-| 20,000          | 21,684        | 0.9          | DELTA-9931 |
-| 30,000          | 32,526        | 0.9          | DELTA-9931 |
-| 35,000          | 37,934        | 0.9          | DELTA-9931 |
-| 40,000          | 43,355        | 0.1 / 0.5 / 0.99 | DELTA-9931 (all) |
-| 60,000          | 65,026        | 0.9          | DELTA-9931 |
-| 100,000         | 108,355       | 0.9          | DELTA-9931 |
+| context (words) | prompt tokens | needle depth      | TTFT   | result |
+|-----------------|---------------|-------------------|--------|--------|
+| 8,000           | 10,435        | 0.9               | 1.0s   | DELTA-9931 |
+| 30,000          | 39,743        | 0.05 / 0.5 / 0.95 | 1.9s   | DELTA-9931 (all) |
+| 60,000          | 80,650        | 0.1 / 0.5 / 0.9   | 3.3s   | DELTA-9931 (all) |
+| 100,000         | 136,045       | 0.1 / 0.9         | 5.4s   | DELTA-9931 (all) |
+| 200,000         | 273,703       | 0.1 / 0.9         | 11.1s  | DELTA-9931 (all) |
+| 400,000         | 540,968       | 0.1 / 0.9         | 24.7s  | DELTA-9931 (all) |
+| 500,000         | 678,463       | 0.1 / 0.9         | 33.6s  | DELTA-9931 (all) |
+| 640,000         | 871,315       | 0.1 / 0.9         | 49.5s  | DELTA-9931 (all) |
 
-**Exact recall to 100K tokens, all needle depths.**
+**Exact recall to 871,315 tokens, all needle depths.** The only ceiling is
+`max_model_len` (940,000): a prompt above it is cleanly rejected (HTTP 400 from the
+prefill leg, surfaced by the router), **not** mis-recalled. Chunked prefill both
+keeps every chunk's per-group KV (fix #2) and avoids the single-chunk Triton
+compile wall (<~780K) — so it supersedes the earlier single-chunk recipe (which
+was correct but capped ~100K on VRAM/compile).
 
 ## EP8 1P/1D  (DP8 + expert-parallel, MoRIIO KV + allgather/reducescatter MoE, util 0.40)
 
-`max-model-len 65536`, `--max-num-batched-tokens 65536` (single-chunk to 64K).
+Chunked prefill (`--enable-chunked-prefill --max-num-batched-tokens 16384`),
+`max-model-len 940000`, util 0.40. Verified live on a gold ionic rail pair
+(030↔038). The cross-chunk-accumulation fix is config-agnostic (it is in the
+connector, not the parallelism), so EP8 reaches the same envelope as TP4.
 
-| context (words) | prompt tokens | needle depth | result |
-|-----------------|---------------|--------------|--------|
-| 500             | 558           | 0.9              | DELTA-9931 |
-| 8,000           | 8,598         | 0.9              | DELTA-9931 |
-| 20,000          | 21,453        | 0.9              | DELTA-9931 |
-| 28,000          | 30,033        | 0.9              | DELTA-9931 |
-| 32,000          | 32,163        | 0.9              | DELTA-9931 |
-| 40,000          | 39,663        | 0.9              | DELTA-9931 |
-| 50,000          | 49,308        | 0.9              | DELTA-9931 |
-| 60,000          | 60,033        | 0.9              | DELTA-9931 |
-| 64,000          | 63,783        | 0.9              | DELTA-9931 |
+| context (words) | prompt tokens | needle depth | TTFT   | result |
+|-----------------|---------------|--------------|--------|--------|
+| 8,000           | 10,435        | 0.9          | 3.3s   | DELTA-9931 |
+| 30,000          | 39,743        | 0.1 / 0.9    | 5.9s   | DELTA-9931 (all) |
+| 60,000          | 80,650        | 0.1 / 0.9    | 5.8s   | DELTA-9931 (all) |
+| 100,000         | 136,045       | 0.1 / 0.9    | 13.3s  | DELTA-9931 (all) |
+| 200,000         | 273,703       | 0.1 / 0.9    | 22.9s  | DELTA-9931 (all) |
+| 400,000         | 540,968       | 0.1 / 0.9    | 37.2s  | DELTA-9931 (all) |
+| 500,000         | 678,463       | 0.1 / 0.9    | 45.6s  | DELTA-9931 (all) |
+| 640,000         | 871,315       | 0.1 / 0.9    | 60.8s  | DELTA-9931 (all) |
 
-**Exact recall to 64K tokens (up to the configured 65,536 max-model-len), all
-depths.** The ceiling is purely `max-model-len` / the single-chunk prefill batch
-cap, not a correctness limit: a prompt over 65,536 is cleanly rejected (HTTP 400),
-not mis-recalled. Raise `max-model-len` + `--max-num-batched-tokens` together to
-extend (VRAM headroom exists at util 0.40 — KV was ~35x concurrency loaded at 64K).
+**Exact recall to 871,315 tokens, all needle depths** — same as TP4. The prior
+single-chunk EP8 recipe capped at 64K (`max-model-len`); chunked prefill lifts it
+to the model max. The only ceiling is `max_model_len` (over → clean HTTP-400).
+
+## Self-contained baked image (OVERLAYS=0) — re-verified 2026-09-23
+
+The baked image `rocmshared/vllm-glm53-flash:glm53-flash-disagg-overlays-v1`
+(`docker/…glm53flash.overlay.amd.Dockerfile` — the 11 overlays COPYed in-source
+onto the proven base) was verified with **no runtime overlays** (`OVERLAYS=0`) on
+gold pair 014↔021, MoRI WRITE mode, TP4 1P/1D:
+
+| context (words) | prompt tokens | needle depth      | TTFT   | result |
+|-----------------|---------------|-------------------|--------|--------|
+| 8,000           | 8,684         | 0.1 / 0.5 / 0.9   | ~1s    | DELTA-9931 (all) |
+| 60,000          | 65,026        | 0.1 / 0.9         | 2.8–6.2s | DELTA-9931 (all) |
+| 400,000         | 433,355       | 0.1 / 0.9         | 18.7–21.6s | DELTA-9931 (all) |
+
+Byte-identical recall to the base-image + overlays recipe (the baked files are
+sha256-identical to `../patches/`).
+
+**`glm53-flash-disagg-v2` (mori also baked) — re-verified 2026-09-23, NO MORI_PATCHED.**
+The v2 image additionally rebuilds mori from the ionic-fix fork
+(`raviguptaamd/mori:ionic-atomic-mr-strip`), so the atomic-MR strip is in-source and
+`MORI_PATCHED`/the shared-`.so` mount is no longer needed. Verified `OVERLAYS=0`,
+**no MORI_PATCHED**, WRITE mode, on 014↔021:
+
+| context (words) | prompt tokens | needle depth      | TTFT   | result |
+|-----------------|---------------|-------------------|--------|--------|
+| 8,000           | 8,684         | 0.1 / 0.5 / 0.9   | 0.9s   | DELTA-9931 (all) |
+| 60,000          | 65,026        | 0.1 / 0.9         | 2.8–6.0s | DELTA-9931 (all) |
+| 400,000         | 433,355       | 0.1 / 0.9         | 18.8–21.6s | DELTA-9931 (all) |
+
+The baked mori is confirmed stripped (`MORI_IO_DISABLE_ATOMIC_MR` string present in
+`libmori_application.so`/`libmori_cco.so`; the base image's mori has 0). v2 still
+needs the two host pieces (`GLIBC_SWAP`, `AITER_KSPLIT=1`/warm cache) documented in
+`README.md`.
 
 ## Before the fix (for reference)
 
-Without the MLA KV block-mapping fix, disagg served coherent local continuation
-but recall was garbage at every length (e.g. "the password is banana. the
-password is" → "is is is is"). Colocated (non-disagg) inference on the same image
-recalled correctly, which localized the bug to the MoRIIO KV transfer.
+Two "before" states, both fixed in-source:
+- **Without the MLA KV block-mapping fix (fix #1):** disagg served coherent local
+  continuation but recall was garbage at every length (e.g. "the password is
+  banana. the password is" → "is is is is"). Colocated (non-disagg) inference on
+  the same image recalled correctly, localizing the bug to the MoRIIO KV transfer.
+- **With fix #1 but not the cross-chunk accumulation (fix #2):** recall was exact
+  within a single prefill chunk but broke at *every* needle depth once a prompt
+  spanned ≥2 chunks (only chunk-1 KV reached decode). Fixed by accumulating each
+  chunk's per-group blocks across the whole prompt.
 
 ## Environment
 
-- Image: built from `docker/vllm_disagg_inference.glmv53flash.ubuntu.amd.Dockerfile`.
-  All fixes are in-source via the pinned forks (vLLM connector fixes + mori ionic
-  fixes); no runtime overlays. gfx950 (MI355X) build target.
+- Image + overlays: base `rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix`
+  (carries the ionic mori atomic-MR strip + aiter-tip + clr fix) + the 11
+  `../patches/` overlays (vLLM connector/model + aiter fixes) bind-mounted by
+  `../vllm_pd_launch.sh`. gfx950 (MI355X). (A self-contained in-source image is a
+  follow-up.)
 - Nodes: 8-GPU MI355X (gfx950), AMD AI NIC (ionic) RoCE, one leg per node.
   Verified on GID-mapped "gold" ionic rail pairs (all 8 rails routed, no IBDEV
   pinning) — TP4 on one pair, EP8 on another.

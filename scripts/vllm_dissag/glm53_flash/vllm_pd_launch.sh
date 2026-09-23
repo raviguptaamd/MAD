@@ -2,12 +2,14 @@
 # =============================================================================
 # GLM-5.3-Flash vLLM + MoRIIO disaggregated P/D launcher (per node, per role).
 #
-# The MoRIIO MLA KV block-mapping fix is IN-SOURCE in the image's vLLM (pinned
-# by VLLM_REF in docker/vllm_disagg_inference.glmv53flash.ubuntu.amd.Dockerfile).
-# This launcher therefore mounts NO Python overlays -- it serves the image as
-# built. The only host bind-mounts are the ionic RDMA userspace libs, an
-# optional glibc-swap closure for the ionic driver, an optional patched-mori
-# .so set (atomic-MR strip), and a persistent JIT cache.
+# CURRENT PROVEN RECIPE = base image `rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix`
+# + the 11 Python overlays in ./patches/ (the verified connector / model / aiter
+# fixes; see patches/README.md). This launcher bind-mounts them (OVERLAYS=1,
+# default) so disagg recalls correctly to 871K tokens. Other host bind-mounts:
+# ionic RDMA userspace libs, an optional glibc-swap closure for the ionic driver,
+# an optional patched-mori .so set (atomic-MR strip), and a persistent JIT cache.
+# (A fully self-contained image with the fixes baked in-source is a follow-up;
+# set OVERLAYS=0 to serve the base image bare — it will NOT recall at depth.)
 #
 # Roles:
 #   ROLE=prefill  -> vllm serve (kv_producer) on PF_PORT
@@ -18,10 +20,16 @@
 #   DECODE_IP, IMG, MODEL.
 # Common optional env (defaults in []):
 #   MODE=tp4|tp8|ep [tp4]          MoRIIO KV only (tp) or +expert-parallel (ep)
-#   GPUUTIL [0.5]  MAXLEN [262144]  KV_DTYPE [auto]  BLOCK_SIZE [4]
+#   GPUUTIL [0.5]  MAXLEN [940000]  KV_DTYPE [auto]  BLOCK_SIZE [4]
 #   SPARSE_IDX_MB [512]  A2A [mori_high_throughput]  DP [8]
-#   EXTRA_ARGS                      extra `vllm serve` args (e.g. single-chunk:
-#                                   --max-num-batched-tokens >= MAXLEN on prefill)
+#   EXTRA_ARGS                      extra `vllm serve` args. RECOMMENDED long-ctx
+#                                   recipe = CHUNKED prefill on the prefill leg:
+#                                   --enable-chunked-prefill --max-num-batched-tokens 16384
+#                                   (keeps per-chunk KV via the connector's cross-
+#                                   chunk accumulation + dodges the single-chunk
+#                                   Triton compile wall <~780K -> exact recall to
+#                                   max_model_len). Single-chunk (--max-num-batched-
+#                                   tokens >= MAXLEN) also works but caps ~100K.
 #   ROUTER_DP_LOCAL [8]             1 for TP, 8 for EP/DP8 (proxy role)
 #   WORKDIR [/tmp/glm53_disagg]     writable dir for logs + compilation configs
 #   JITCACHE_OVERRIDE              node-local dir for the /cache JIT cache
@@ -121,6 +129,7 @@ ENVS=(
   -e MORI_NO_ATOMIC_MR="${MORI_NO_ATOMIC_MR:-1}"
   -e MORIIO_DEFER_WRITES="${MORIIO_DEFER_WRITES:-1}"
   -e VLLM_ROCM_USE_AITER=1 -e VLLM_ROCM_USE_AITER_MOE=${AITER_MOE:-1}
+  -e AITER_KSPLIT=${AITER_KSPLIT:-0}
   -e VLLM_ROCM_USE_AITER_MLA="${AITER_MLA:-1}"
   -e VLLM_ROCM_USE_AITER_RMSNORM=1
   -e VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0
@@ -165,6 +174,34 @@ if [ "${MORI_PATCHED:-0}" = "1" ] && [ -n "${MORI_SO_DIR:-}" ]; then
   done
 fi
 
+# ---- Python overlays (OVERLAYS=1, default on): the verified connector / model /
+# aiter fixes that make GLM-5.3-Flash disagg recall correct (to 871K tokens) on
+# top of the base image. Bind-mounted from ./patches/ (see patches/README.md for
+# the file->destination manifest). These ARE the fix for the currently-proven
+# recipe; the fully in-source image is a follow-up. Set OVERLAYS=0 to serve the
+# base image bare (will NOT recall correctly at depth). ----
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH_DIR="${PATCH_DIR:-$SCRIPT_DIR/patches}"
+_SP="/usr/local/lib/python3.12/dist-packages"
+if [ "${OVERLAYS:-1}" = "1" ] && [ -d "$PATCH_DIR" ]; then
+  declare -A _OVL=(
+    [moriio_connector_hma.py]="$_SP/vllm/distributed/kv_transfer/kv_connector/v1/moriio/moriio_connector.py"
+    [moriio_engine.py]="$_SP/vllm/distributed/kv_transfer/kv_connector/v1/moriio/moriio_engine.py"
+    [moriio_common.py]="$_SP/vllm/distributed/kv_transfer/kv_connector/v1/moriio/moriio_common.py"
+    [moriio_layout.py]="$_SP/vllm/distributed/kv_transfer/kv_connector/v1/moriio/moriio_layout.py"
+    [attn_utils.py]="$_SP/vllm/v1/worker/gpu/attn_utils.py"
+    [indexer.py]="$_SP/vllm/v1/attention/backends/mla/indexer.py"
+    [glm5next_attention.py]="$_SP/vllm/models/glm5next/nvidia/attention.py"
+    [usercustomize.py]="$_SP/usercustomize.py"
+    [gemm_op_a8w8_tip.py]="$_SP/aiter/ops/gemm_op_a8w8.py"
+    [fused_moe_tip.py]="$_SP/aiter/fused_moe.py"
+    [batched_gemm_a16wfp4.py]="$_SP/aiter/ops/triton/gemm/batched/batched_gemm_a16wfp4.py"
+  )
+  for _f in "${!_OVL[@]}"; do
+    [ -e "$PATCH_DIR/$_f" ] && COMMON+=(-v "$PATCH_DIR/$_f:${_OVL[$_f]}:ro")
+  done
+fi
+
 KV_EXTRA_PF='{"proxy_ip":"'$PROXY_IP'","proxy_port":"'$PROXY_PORT'","proxy_ping_port":"'$PROXY_PING'","http_port":"'$PF_PORT'","local_ping_port":"61555","handshake_port":"8405","notify_port":"'$NOTIFY'"}'
 KV_EXTRA_DC='{"proxy_ip":"'$PROXY_IP'","proxy_port":"'$PROXY_PORT'","proxy_ping_port":"'$PROXY_PING'","http_port":"'$DC_PORT'","local_ping_port":"4583","handshake_port":"7305","notify_port":"'$NOTIFY'"}'
 
@@ -177,7 +214,7 @@ case "$ROLE" in
         --port $PF_PORT --gpu_memory_utilization ${GPUUTIL:-0.5} \
         --kv-cache-dtype ${KV_DTYPE:-auto} --block-size ${BLOCK_SIZE:-4} --no-enable-prefix-caching \
         --trust-remote-code $PF_CC \
-        --max-model-len ${MAXLEN:-262144} ${EXTRA_ARGS:-} \
+        --max-model-len ${MAXLEN:-940000} ${EXTRA_ARGS:-} \
         --kv-transfer-config '{\"kv_connector\":\"MoRIIOConnector\",\"kv_role\":\"kv_producer\",\"kv_port\":\"9711\",\"kv_connector_extra_config\":$KV_EXTRA_PF}' \
         2>&1 | tee $LOG/vllm_prefill.log"
     echo "[vllm-prefill] launched :$PF_PORT host=$HOST_IP proxy=$PROXY_IP"
@@ -191,7 +228,7 @@ case "$ROLE" in
         --kv-cache-dtype ${KV_DTYPE:-auto} --block-size ${BLOCK_SIZE:-4} --no-enable-prefix-caching \
         --trust-remote-code $DC_CC \
         --cudagraph-capture-sizes $CAPTURE_SIZES \
-        --max-model-len ${MAXLEN:-262144} ${EXTRA_ARGS:-} \
+        --max-model-len ${MAXLEN:-940000} ${EXTRA_ARGS:-} \
         --kv-transfer-config '{\"kv_connector\":\"MoRIIOConnector\",\"kv_role\":\"kv_consumer\",\"kv_port\":\"6301\",\"kv_connector_extra_config\":$KV_EXTRA_DC}' \
         2>&1 | tee $LOG/vllm_decode.log"
     echo "[vllm-decode] launched :$DC_PORT host=$HOST_IP proxy=$PROXY_IP"
