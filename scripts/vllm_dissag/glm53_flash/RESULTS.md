@@ -89,6 +89,22 @@ The baked mori is confirmed stripped (`MORI_IO_DISABLE_ATOMIC_MR` string present
 needs the two host pieces (`GLIBC_SWAP`, `AITER_KSPLIT=1`/warm cache) documented in
 `README.md`.
 
+**`glm53-flash-disagg-v3` (mori + router both baked) — re-verified 2026-09-23.**
+v3 additionally builds `vllm-router` from source into `/usr/local/bin`, so **no
+`ROUTER_BIN` host binary is needed** either. Verified `OVERLAYS=0`, **no
+MORI_PATCHED, no ROUTER_BIN**, WRITE mode, on 014↔021 — router confirmed running
+from the in-image binary (no mount):
+
+| context (words) | prompt tokens | needle depth    | TTFT   | result |
+|-----------------|---------------|-----------------|--------|--------|
+| 8,000           | 8,684         | 0.1 / 0.5 / 0.9 | 0.8s   | DELTA-9931 (all) |
+| 60,000          | 65,026        | 0.1 / 0.9       | 2.8–5.9s | DELTA-9931 (all) |
+
+v3 is the fully self-contained artifact: vLLM/aiter overlays + mori (ionic strip) +
+vllm-router all in-image. Only `GLIBC_SWAP` + `AITER_KSPLIT=1`/warm cache remain as
+node-infra launch pieces (see `README.md`). Full reproduction gates + the
+TTFT/TPOT/throughput benchmark plan are in `TEST_PLAN.md`.
+
 ## Before the fix (for reference)
 
 Two "before" states, both fixed in-source:

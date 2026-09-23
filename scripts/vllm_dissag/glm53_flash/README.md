@@ -42,22 +42,26 @@ connector / model / aiter fixes. This is what was measured to 871K, in MoRI
   CHUNKFIX, layout, indexer, glm5next attn, hybrid-KV attn_utils, gfx950 aiter
   kernels, dynamo/inductor guard).
 
-### Self-contained image (overlays + mori baked in — no runtime .so mounts)
+### Self-contained image (overlays + mori + router baked in — no runtime mounts)
 For a single shippable artifact, `docker/vllm_disagg_inference.glm53flash.overlay.amd.Dockerfile`
 starts `FROM` the proven base image and **(a) rebuilds mori** from the fork branch
-that carries the ionic fixes (atomic-MR strip + HIP-device restore) and **(b) COPYs
-the 11 sha256-verified overlays** into site-packages. So the image itself carries
-the ionic mori strip — **no `MORI_PATCHED` / shared-`.so` mount needed at runtime**.
+that carries the ionic fixes (atomic-MR strip + HIP-device restore), **(b) builds
+`vllm-router`** from source into `/usr/local/bin`, and **(c) COPYs the 11
+sha256-verified overlays** into site-packages. So the image carries the ionic mori
+strip AND the router — **no `MORI_PATCHED` / mori-`.so` mount and no `ROUTER_BIN`
+host binary needed at runtime**.
 Build (context = this recipe dir) and run with `OVERLAYS=0`:
 ```
 docker build -f docker/vllm_disagg_inference.glm53flash.overlay.amd.Dockerfile \
-  -t rocmshared/vllm-glm53-flash:glm53-flash-disagg-v2 \
+  -t rocmshared/vllm-glm53-flash:glm53-flash-disagg-v3 \
   scripts/vllm_dissag/glm53_flash/
-# then serve with the built image, no runtime overlays, no mori mount:
-IMG=rocmshared/vllm-glm53-flash:glm53-flash-disagg-v2 OVERLAYS=0 \
+# then serve with the built image, no runtime overlays, no mori/router mounts:
+IMG=rocmshared/vllm-glm53-flash:glm53-flash-disagg-v3 OVERLAYS=0 \
 INFRA_ENV="GLIBC_SWAP=1 HOSTLIBS=<glibc-2.39 closure dir> AITER_KSPLIT=1" \
   ... bash run_flash_disagg_tp4.sh
 ```
+(`ROUTER_BIN` defaults to the in-image `/usr/local/bin/vllm-router`; set it to a
+host path only to override with an external build.)
 Verified live on gold pair 014↔021, `OVERLAYS=0`, **no MORI_PATCHED**, MoRI WRITE
 mode: exact `DELTA-9931` recall at 8K (depths 0.1/0.5/0.9), 60K, and 400K tokens
 (433K prompt, TTFT ~20s). The baked mori is confirmed to carry the strip

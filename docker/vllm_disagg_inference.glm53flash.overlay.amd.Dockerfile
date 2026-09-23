@@ -32,7 +32,6 @@ FROM ${BASE_IMAGE}
 # --- stack provenance ---------------------------------------------------------
 ARG BASE_IMAGE_DIGEST=sha256:2a359be8503efc2fd22c87a264bf0829bc23f098c4c8a0beefa41d0fe4ae1a6a
 ARG AITER_REF=624e43586b                                    # aiter-tip + the 3 gfx950 overlays baked below
-ARG ROUTER_REF=82dc9811af17412e6e24b5942a5486bc502df23a     # raviguptaamd/router — PR #223
 ARG PYTORCH_ROCM_ARCH=gfx950
 
 # --- mori: rebuild from the fork with the ionic fixes (kills MORI_PATCHED) -----
@@ -59,6 +58,26 @@ RUN set -e; \
     BUILD_UMBP=OFF pip install . && \
     python3 -c "import mori, mori.io, mori.ops; print('MoRI OK at', mori.__path__[0])" && \
     cd / && rm -rf /tmp/mori-src
+
+# --- vllm-router: build from source into the image (kills the ROUTER_BIN mount) -
+# raviguptaamd/router: pd-disaggregation router with moriio KV-connector + service
+# discovery. Pinned to a sha for reproducible rebuilds. Installed to /usr/local/bin
+# so the launcher finds it on PATH (no host-binary mount).
+ARG ROUTER_REPO=https://github.com/raviguptaamd/router.git
+ARG ROUTER_REF=82dc9811af17412e6e24b5942a5486bc502df23a     # raviguptaamd/router (moriio pd-disagg)
+ARG RUST_TOOLCHAIN=1.88.0
+RUN set -e; \
+    if ! command -v cargo >/dev/null 2>&1; then \
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain "${RUST_TOOLCHAIN}"; \
+    fi; \
+    export PATH="/root/.cargo/bin:${PATH}"; \
+    rm -rf /tmp/vllm-router-src && \
+    git clone --filter=blob:none "${ROUTER_REPO}" /tmp/vllm-router-src && \
+    cd /tmp/vllm-router-src && git checkout "${ROUTER_REF}" && \
+    cargo build --release && \
+    install -m 755 target/release/vllm-router /usr/local/bin/vllm-router && \
+    vllm-router --help 2>&1 | grep -q moriio && \
+    cd / && rm -rf /tmp/vllm-router-src
 
 ARG SP=/usr/local/lib/python3.12/dist-packages
 

@@ -234,12 +234,15 @@ case "$ROLE" in
     echo "[vllm-decode] launched :$DC_PORT host=$HOST_IP proxy=$PROXY_IP"
     ;;
   proxy)
-    # vLLM router (pd-disaggregation, service discovery). Provide ROUTER_BIN
-    # (the raviguptaamd/vllm-router build). ROUTER_DP_LOCAL: 1 for TP, 8 for EP.
-    ROUTER_BIN="${ROUTER_BIN:?path to the vllm-router binary}"
+    # vLLM router (pd-disaggregation, service discovery). The self-contained image
+    # ships vllm-router at /usr/local/bin/vllm-router (default). Set ROUTER_BIN to a
+    # HOST path to override with an external build (then it is bind-mounted in).
+    # ROUTER_DP_LOCAL: 1 for TP, 8 for EP.
+    ROUTER_BIN="${ROUTER_BIN:-/usr/local/bin/vllm-router}"
     RDP="${ROUTER_DP_LOCAL:-8}"
+    ROUTER_MNT=(); case "$ROUTER_BIN" in /usr/local/bin/*) ;; *) ROUTER_MNT=(-v "$ROUTER_BIN:$ROUTER_BIN:ro") ;; esac
     docker rm -f vllm_proxy >/dev/null 2>&1
-    docker run -d --name vllm_proxy --network host -v "$ROUTER_BIN:$ROUTER_BIN:ro" -v "$WORKDIR:$WORKDIR" \
+    docker run -d --name vllm_proxy --network host "${ROUTER_MNT[@]}" -v "$WORKDIR:$WORKDIR" \
       --entrypoint bash "$IMG" -lc "
       $ROUTER_BIN --host 0.0.0.0 --port $PROXY_PORT \
         --vllm-pd-disaggregation --kv-connector moriio \

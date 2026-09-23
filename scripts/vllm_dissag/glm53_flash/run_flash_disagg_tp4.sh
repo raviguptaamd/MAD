@@ -38,7 +38,7 @@ DC_IP="${DC_IP:?decode  node ip}"
 REMOTE_DIR="${REMOTE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 IMG="${IMG:-rocmshared/vllm-glm53-flash:ionic-aiter-tip-clrfix}"  # base image; launcher mounts ./patches/ overlays
 MODEL="${MODEL:?path to GLM-5.3-Flash weights on the nodes}"
-ROUTER_BIN="${ROUTER_BIN:?path to the vllm-router binary on the nodes}"
+ROUTER_BIN="${ROUTER_BIN:-/usr/local/bin/vllm-router}"   # in-image by default; set to a host path to override
 PROXY_PING="${PROXY_PING:-36382}"
 WORKDIR="${WORKDIR:-/tmp/glm53_disagg}"                  # writable logs/config dir on the nodes
 # Optional node infra (leave unset if not needed): GLIBC_SWAP + HOSTLIBS for the
