@@ -53,6 +53,10 @@ drive "$PF_JOB" "cd $REMOTE_DIR && ROLE=proxy MODE=ep ROUTER_DP_LOCAL=8 ROUTER_B
   HOST_IP=$PF_IP PROXY_IP=$PF_IP DECODE_IP=$DC_IP PROXY_PING=$PROXY_PING bash vllm_pd_launch.sh"
 
 echo "=== [2] DECODE first ==="
+# NOTE: decode kept EAGER here. TP4 decode CUDA graphs give ~6x lower TPOT (see
+# RESULTS.md + run_flash_disagg_tp4.sh) but graphs were NOT yet verified for EP8's
+# DP8+expert-parallel decode path -- flip to EAGER=0 DECODE_CUDAGRAPH_MODE=FULL_AND_PIECEWISE
+# (drop --enforce-eager) once EP8 graphs are validated (recall + no crash).
 drive "$DC_JOB" "cd $REMOTE_DIR && ROLE=decode $COMMON HOST_IP=$DC_IP DECODE_CUDAGRAPH_MODE=NONE \
   EXTRA_ARGS='--max-num-seqs 128 --enforce-eager' bash vllm_pd_launch.sh"
 

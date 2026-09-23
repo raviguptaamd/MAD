@@ -74,8 +74,13 @@ drive "$PF_JOB" "cd $REMOTE_DIR && ROLE=proxy MODE=tp4 ROUTER_DP_LOCAL=1 ROUTER_
   bash vllm_pd_launch.sh"
 
 echo "=== [2] DECODE first (order matters: prefill handshakes to decode) ==="
-drive "$DC_JOB" "cd $REMOTE_DIR && ROLE=decode $COMMON_ENV HOST_IP=$DC_IP \
-  EXTRA_ARGS='--max-num-seqs 256 --enforce-eager --cudagraph-capture-sizes 1 2 4 8 16 32 64 128 256' \
+# Decode runs with CUDA graphs (FULL_AND_PIECEWISE): ~6x lower TPOT / ~3.4x higher
+# decode throughput vs --enforce-eager, recall unchanged (verified 8K/60K, see
+# RESULTS.md). EAGER=0 here overrides the COMMON_ENV EAGER=1; the launcher adds
+# --cudagraph-capture-sizes, so do NOT repeat it in EXTRA_ARGS (would duplicate).
+# Prefill stays eager (graphs don't help the single big prefill pass).
+drive "$DC_JOB" "cd $REMOTE_DIR && ROLE=decode $COMMON_ENV EAGER=0 DECODE_CUDAGRAPH_MODE=FULL_AND_PIECEWISE HOST_IP=$DC_IP \
+  EXTRA_ARGS='--max-num-seqs 256' \
   bash vllm_pd_launch.sh"
 
 echo "=== [3] PREFILL second (chunked prefill: keeps per-chunk KV + dodges compile wall) ==="

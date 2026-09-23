@@ -105,6 +105,46 @@ vllm-router all in-image. Only `GLIBC_SWAP` + `AITER_KSPLIT=1`/warm cache remain
 node-infra launch pieces (see `README.md`). Full reproduction gates + the
 TTFT/TPOT/throughput benchmark plan are in `TEST_PLAN.md`.
 
+## Performance (v3, TP4 1P/1D, gold pair 014↔021, WRITE mode)
+
+### NIAH recall ladder (correctness) — all depths recall `DELTA-9931`
+| context (words) | prompt tokens | depths | TTFT | result |
+|---|---|---|---|---|
+| 8,000   | 8,684   | 0.1/0.5/0.9 | 0.9s  | PASS (all) |
+| 30,000  | 32,526  | 0.1/0.5/0.9 | 1.7s  | PASS (all) |
+| 60,000  | 65,026  | 0.1/0.5/0.9 | 2.8s  | PASS (all) |
+| 100,000 | 108,355 | 0.1/0.5/0.9 | 4.4s  | PASS (all) |
+| 200,000 | 216,684 | 0.1/0.5/0.9 | 8.7s  | PASS (all) |
+| 236,000 | 255,684 | 0.1/0.5/0.9 | 10–12s | PASS (all) |
+
+TTFT scales ~linearly with prompt tokens (~43 tok/ms prefill; slight upward bend at
+the top from MLA O(n²) attention).
+
+### Throughput / latency — 256K in / 1024 out, concurrency 8 (eager decode)
+TTFT p50 44.9s / p99 130.5s, TPOT p50 140ms, agg out 40 tok/s. The single-request
+256K TTFT is ~10s → the C=8 TTFT growth is prefill-**capacity contention** (8 prefills
+through 4 prefill GPUs), not per-request cost. Levers to flatten: prefix caching
+(shared-prefix workloads), context/sequence parallelism, or more prefill capacity
+(xPyD / larger prefill TP). Decode has headroom (flat TPOT).
+
+### Decode CUDA graphs vs eager — 8K in / 200 out, concurrency 8 (matched)
+Decode `cudagraph_mode=FULL_AND_PIECEWISE` (prefill stays eager) vs the shipped
+`--enforce-eager` decode. **Recall unchanged** (DELTA-9931 correct at 8K + 60K, both
+depths under graphs). Graph capture: 9s, 1.84 GiB.
+
+| metric | eager (current recipe) | CUDA graphs | improvement |
+|---|---|---|---|
+| TPOT p50 | 83.1 ms | **14.0 ms** | **5.9×** |
+| TPOT p99 | 84.8 ms | 14.2 ms | 6.0× |
+| out throughput | 72.6 tok/s | **243.7 tok/s** | **3.4×** |
+| TTFT p50 | 3.9 s | 2.0 s | 1.95× |
+
+→ decode CUDA graphs are a large, correctness-safe win (task #223). Enable with
+`EAGER=0 DECODE_CUDAGRAPH_MODE=FULL_AND_PIECEWISE` and drop `--enforce-eager` from the
+decode leg's EXTRA_ARGS. (The launcher's `EAGER=0` path was fixed to make this work:
+a `local role=...` same-line unbound-var bug that mis-wrote the compilation-config,
+and inline-JSON quoting through the docker heredoc.)
+
 ## Before the fix (for reference)
 
 Two "before" states, both fixed in-source:

@@ -58,22 +58,27 @@ PREFILL_CUDAGRAPH_MODE="${PREFILL_CUDAGRAPH_MODE:-NONE}"
 DECODE_CUDAGRAPH_MODE="${DECODE_CUDAGRAPH_MODE:-NONE}"
 CAPTURE_SIZES="${CUDAGRAPH_CAPTURE_SIZES:-1 2 4 8 16 32 64 128 256}"
 _compcfg_write() {  # $1=role $2=mode -> writes file, echoes path
-  local role="$1" mode="$2" f="${WORKDIR}/compcfg_${role}.json"
+  local role="$1"; local mode="$2"; local f="${WORKDIR}/compcfg_${role}.json"
+  mkdir -p "${WORKDIR}" 2>/dev/null || true   # ensure dir exists before write (else file silently missing)
+  # COMPACT JSON (no spaces) so an unquoted $(cat file) is a single argv token
+  # when expanded inside the container shell (see DC_CC below).
   if [ "${EAGER:-1}" = "1" ]; then
-    printf '{"mode": 0, "cudagraph_mode": "NONE", "custom_ops": ["+quant_fp8"]}\n' > "$f" 2>/dev/null || true
+    printf '{"mode":0,"cudagraph_mode":"NONE","custom_ops":["+quant_fp8"]}' > "$f" 2>/dev/null || true
   else
-    printf '{"cudagraph_mode": "%s", "custom_ops": ["+quant_fp8"]}\n' "$mode" > "$f" 2>/dev/null || true
+    printf '{"cudagraph_mode":"%s","custom_ops":["+quant_fp8"]}' "$mode" > "$f" 2>/dev/null || true
   fi
   echo "$f"
 }
 PF_CFG_FILE="$(_compcfg_write prefill "$PREFILL_CUDAGRAPH_MODE")"
 DC_CFG_FILE="$(_compcfg_write decode "$DECODE_CUDAGRAPH_MODE")"
-# NOTE: the serve command runs inside docker `bash -lc "..."` (double-quoted), so the
-# compilation-config JSON must be wrapped in SINGLE quotes to survive as one argv token
-# -- double quotes here collide with the outer -lc "..." and expose the JSON's own quotes
-# to the shell, crashing vLLM arg parsing (only latent in EAGER, where PF_CC/DC_CC are empty).
+# vLLM's --compilation-config needs INLINE JSON (a file path is rejected as
+# json_invalid). To pass JSON through the docker `bash -lc "..."` heredoc without the
+# host shell mangling its quotes, defer the substitution to the CONTAINER's shell:
+# the compcfg_*.json file is mounted (via $WORKDIR) at the same path, so we emit a
+# literal $(cat <file>) that the container's bash expands at runtime. The \$ keeps it
+# unexpanded on the host side; single quotes wrap it as one argv token in-container.
 if [ "${EAGER:-1}" = "1" ]; then PF_CC=""; DC_CC=""
-else PF_CC="--compilation-config '$(cat $PF_CFG_FILE)'"; DC_CC="--compilation-config '$(cat $DC_CFG_FILE)'"; fi
+else PF_CC="--compilation-config \$(cat $PF_CFG_FILE)"; DC_CC="--compilation-config \$(cat $DC_CFG_FILE)"; fi
 
 # MODE: tp4 / tp8 = tensor-parallel, MoRIIO KV only. ep = DP + expert-parallel + a2a.
 MODE="${MODE:-tp4}"
