@@ -139,6 +139,11 @@ ENVS=(
   -e VLLM_ROCM_USE_AITER_RMSNORM=1
   -e VLLM_ROCM_USE_AITER_FUSION_SHARED_EXPERTS=0
   -e VLLM_ROCM_USE_AITER_PAGED_ATTN=0 -e VLLM_USE_AITER_TRITON_SILU_MUL=0
+  # Cross-node DP16 (EP16 2P/2D) only: the aiter fp8-BMM precompile loop runs a GPU
+  # alloc/compile storm that corrupts the cross-node gloo epoll fd -> gloo nfds=-1
+  # segfault. Default off avoids it (runtime falls back to torch.bmm, BF16, correct).
+  # Harmless for TP/EP8 (intra-node XGMI DP, no cross-node gloo). Set =1 to restore.
+  -e VLLM_ROCM_USE_AITER_FP8BMM="${AITER_FP8BMM:-0}"
   -e VLLM_USE_V1=1 -e VLLM_LOGGING_LEVEL=INFO
   -e VLLM_SPARSE_INDEXER_MAX_LOGITS_MB="${SPARSE_IDX_MB:-512}"
   -e VLLM_ALL2ALL_BACKEND="${A2A:-allgather_reducescatter}"
@@ -169,6 +174,13 @@ COMMON=(--network host --ipc host --privileged --group-add video
   --cap-add IPC_LOCK --cap-add NET_ADMIN --ulimit memlock=-1:-1 --ulimit stack=67108864
   --ulimit nofile=1048576:1048576 --shm-size 128G
   -v "$MODEL:$MODEL:ro" -v "$WORKDIR:$WORKDIR" -v /sys/class/infiniband:/sys/class/infiniband:ro)
+
+# ---- optional extra bind-mounts (iteration hook). EXTRA_MOUNTS is a
+# space-separated list of host:container[:ro] specs, e.g. to overlay a single
+# patched .py onto the in-image path without rebuilding. ----
+if [ -n "${EXTRA_MOUNTS:-}" ]; then
+  for _m in ${EXTRA_MOUNTS}; do COMMON+=(-v "$_m"); done
+fi
 
 # ---- optional patched-mori .so set (ionic atomic-MR strip). Ideally baked into
 # the image; provide MORI_SO_DIR to overlay a host-built set. ----

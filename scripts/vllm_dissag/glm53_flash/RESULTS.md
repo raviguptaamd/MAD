@@ -105,6 +105,25 @@ vllm-router all in-image. Only `GLIBC_SWAP` + `AITER_KSPLIT=1`/warm cache remain
 node-infra launch pieces (see `README.md`). Full reproduction gates + the
 TTFT/TPOT/throughput benchmark plan are in `TEST_PLAN.md`.
 
+### EP8 1P/1D on the v3 self-contained image — re-verified 2026-09-23 (gold pair 030↔038)
+EP8 (DP8 + expert-parallel, `allgather_reducescatter` MoE dispatch + MoRIIO KV,
+util 0.40) on the **v3 image** (`OVERLAYS=0`, no external mounts), **decode CUDA
+graphs** on, single-chunk prefill (`--max-num-batched-tokens = max_model_len`).
+Recall `DELTA-9931`:
+
+| context (words) | prompt tokens | depths | TTFT | result |
+|---|---|---|---|---|
+| 8,000  | 8,684  | 0.1/0.5/0.9 | 1.7–3.4s | PASS (all) |
+| 20,000 | 21,684 | 0.1/0.5/0.9 | 2.4–3.8s | PASS (all) |
+| 28,000 | 30,355 | 0.1/0.9     | 2.0–4.3s | PASS (all) |
+
+Ceiling = `max_model_len` (32768, EP8 single-chunk). Confirms EP8 disagg on the
+self-contained v3 image (previously only the base-image + overlays recipe was
+verified for EP8). Notes: EP8 needs the gold aiter JIT seed on cold nodes
+(`module_quant.so` won't compile from source; seed
+`jitcache_*/aiter/` from a warm set) and **single-chunk** prefill (chunked-prefill
+auto-default 400s the disagg-prefill request under DSA+EP).
+
 ## Performance (v3, TP4 1P/1D, gold pair 014↔021, WRITE mode)
 
 ### NIAH recall ladder (correctness) — all depths recall `DELTA-9931`
