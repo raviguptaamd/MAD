@@ -281,3 +281,39 @@ GLM-5.1-FP8:
     # prompt length: smaller values cut per-token latency but inflate TTFT sharply;
     # 2048 was the balance point.
     dp: "--max-num-batched-tokens 2048"
+
+GLM-5.3-Flash-MI300:
+  env:
+    VLLM_USE_V1: "1"
+    VLLM_ROCM_USE_AITER: "1"
+    VLLM_ROCM_USE_AITER_MLA: "1"
+    VLLM_ROCM_USE_AITER_MOE: "1"
+    VLLM_ROCM_USE_AITER_RMSNORM: "1"
+    VLLM_ROCM_USE_AITER_FP8BMM: "0"
+    VLLM_USE_DEEP_GEMM: "0"
+    KV_BLOCK_SIZE: "4"
+    KV_CACHE_DTYPE: "auto"
+    # Decode CUDA graph (verified on MI300X gfx942). PIECEWISE is the safe default;
+    # FULL_AND_PIECEWISE captures + serves and is ~1.7x faster TPOT (15.8 vs 27ms)
+    # but the connector warns the per-layer KV-read barrier can't fire inside the
+    # full graph in READ mode -> verify accuracy at high concurrency before using it.
+    PREFILL_CUDAGRAPH_MODE: "NONE"          # prefill = enforce-eager
+    DECODE_CUDAGRAPH_MODE: "PIECEWISE"      # FULL_AND_PIECEWISE = faster, conc-accuracy caveat
+    VLLM_USE_BREAKABLE_CUDAGRAPH: "1"       # decode cudagraph correctness (indexer breaks out)
+    # DSA sparse-indexer logits-buffer cap.
+    VLLM_SPARSE_INDEXER_MAX_LOGITS_MB: "4096"
+    # EP8 MoE dispatch. allgather_reducescatter is the safe default; mori_high_throughput
+    # (native MoRI-EP a2a) also works on gfx942 on this image (beats PR254's fallback).
+    VLLM_ALL2ALL_BACKEND: "allgather_reducescatter"
+  dp_flags: "--tool-call-parser glm47 --reasoning-parser glm45 --enable-auto-tool-choice --chat-template-content-format string"
+  tp_flags: ""
+  # Long-context unlock (VERIFIED EP8/EP8 to 256K, TP4xDP2 to 256K): MML just above
+  # target + MNBT 16384 + no-prefix-caching, both legs.
+  prefill:
+    tp: "--max-model-len 270000 --max-num-batched-tokens 16384 --no-enable-prefix-caching"
+    dp: "--max-model-len 270000 --max-num-batched-tokens 16384 --no-enable-prefix-caching"
+  decode:
+    tp: "--max-num-seqs 64"
+    dp: "--max-num-seqs 64"
+  # NOTE: MTP (--speculative-config mtp) is OFF on disagg — it crashes the decode
+  # EngineCore (per-group KV alloc invariant). MTP+cudagraph works COLOCATED only.

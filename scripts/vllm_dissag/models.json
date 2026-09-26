@@ -499,5 +499,39 @@
             "AGENTIC_WORKLOAD": "conformance_256k"
         },
         "args": "-N 2 -n 2"
+    },
+    {
+        "name": "pyt_vllm_disagg_mori_glm-5.3-flash_mi300",
+        "dockerfile": "../../docker/vllm_disagg_inference.glmv53flash.mi300",
+        "scripts": "run_xPyD_models.slurm",
+        "url": "",
+        "data": "huggingface",
+        "n_gpus": "-1",
+        "owner": "mad.support@amd.com",
+        "training_precision": "",
+        "tags": [
+            "pyt",
+            "vllm",
+            "vllm_disagg",
+            "mori_ep",
+            "inference",
+            "gfx942",
+            "mi300x",
+            "mi325x"
+        ],
+        "timeout": -1,
+        "distributed": {
+            "launcher": "slurm_multi"
+        },
+        "env_vars": {
+            "DOCKER_IMAGE_NAME": "<supply-your-image, e.g. rocmshared/vllm-glm53flash:glmv5.3-flash.mi300>",
+            "MODEL_NAME": "GLM-5.3-Flash-MI300",
+            "xP": "1",
+            "yD": "1",
+            "RUN_MORI": "1",
+            "RUN_DEEPEP": "0",
+            "BENCHMARK_COMBINATIONS": "1024/1024"
+        },
+        "args": "-N 2 -n 2"
     }
 ]

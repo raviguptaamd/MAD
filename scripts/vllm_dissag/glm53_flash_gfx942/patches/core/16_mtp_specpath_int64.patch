@@ -1,0 +1,75 @@
+# 16_mtp_specpath_int64.patch
+#
+# MTP-over-disagg spec-decode path: int64-widen the one remaining context-scaled
+# int32 base offset in the GLM-5.3-Flash MTP/spec-decode Triton kernels.
+#
+# CONTEXT. Prior device-test proved MTP-over-disagg (EP8 prefill EAGER + EP8
+# decode PIECEWISE + --speculative-config method=mtp,num_speculative_tokens=1,
+# so next_n=2) survives to 10K context but faulted >16K with a decode-side GPU
+# "Memory access fault" -- the same int32 byte-offset overflow class as patch15,
+# but on the MTP/spec-decode kernels patch15's paged-MQA-logits fix does not
+# cover. This patch is the audit-and-widen of those kernels.
+#
+# AUDIT (every context / next_n / token-count scaled byte offset in the three
+# named faulting kernels, on this pinned stack — vllm 0.3.1.dev3+g0bfc7a15d):
+#
+#  vllm/models/glm5next/amd/ops/kpool_compress.py
+#   * _kpool_decode_update_batched_kernel (decode kpool write, next_n loop):
+#       - cache write base   loc = cache_loc.to(tl.int64); loc_page_index*...  -> ALREADY int64
+#       - tail-ring base     block = tl.maximum(tail_slot,0).to(tl.int64)//POOL -> ALREADY int64
+#       - idx = req*NEXT_N+t  (<= max_num_seqs*next_n <= 128)                   -> bounded, no widen
+#     => the heavy, context-scaled offsets here were already int64 (their bug
+#        class was fixed in an earlier pass); nothing to widen.
+#   * _expand_pools_and_append_tail_kernel (pool-expand + tail-append):
+#       - row = tl.program_id(0)   (int32)                                      -> WIDENED to int64
+#         row indexes pool_ids_ptr + row*pid_s0 and out_ptr + row*out_s0. On the
+#         decode leg row is bounded (<= batch), but this is the one remaining
+#         int32 base index in the spec path; widen it at the offset site to match
+#         patch15's idiom and remove the class outright. hist_val/tail_val stay
+#         int32 (they are token-id VALUES written to an int32 output, not byte
+#         offsets, and MUST stay int32 for output correctness).
+#
+#  vllm/v1/worker/gpu/spec_decode/rejection_sampler_utils.py
+#   * _rejection_kernel / _resample_kernel / stats & residual kernels: every
+#     logit base offset is logit_idx|start_idx|resample_token_idx * *_stride,
+#     and logit_idx/start_idx are ALREADY .to(tl.int64) at their load sites
+#     (program_id(0).to(tl.int64); tl.load(cu_num_logits_ptr+req).to(tl.int64)).
+#     resample_token_idx = start_idx(int64) + resample_idx -> int64. These rows
+#     scale with num_logits (= num_reqs*next_n <= ~128) and vocab (~151k), i.e.
+#     with BATCH and VOCAB, not with context, and are already int64-safe.
+#     => nothing to widen.
+#
+#  vllm/v1/attention/backends/mla/indexer.py (DSA indexer decode path, next_n):
+#     builds metadata (seq_lens (B,next_n), block_table, decode_lens) on host;
+#     the device byte offsets are consumed inside the aiter paged-MQA-logits
+#     gluon kernel, which patch15 already int64-widened (verified installed:
+#     55 int64 markers, 34 next_n reads). No int32 offset site here to widen.
+#
+# CONCLUSION. On this stack the only spec-path kernel still holding a
+# non-int64 context-indexable base is _expand_pools_and_append_tail_kernel's
+# `row`; the actual >16K decode-compute fault is carried by the paged-MQA-logits
+# kernel (patch15) plus the MTP-disagg per-group block-count reconcile in the
+# MoRIIO connector (GLM53_MTP_DISAGG_RECONCILE), both already installed. This
+# patch widens the one remaining site so the int32-overflow class is fully
+# closed across the MTP/spec path; it is numerically identical (zero-extend of a
+# non-negative index) and guard-only.
+#
+# Verify the install path before applying. vllm 0.3.1.dev3+g0bfc7a15d ships the
+# kernel at <site-packages>/vllm/models/glm5next/amd/ops/kpool_compress.py.
+#
+--- a/vllm/models/glm5next/amd/ops/kpool_compress.py
++++ b/vllm/models/glm5next/amd/ops/kpool_compress.py
+@@ -797,7 +797,12 @@
+ ):
+     # Fuses expand_pools_to_tokens + append_tail_to_topk (identity path) into a
+     # single kernel. Each program writes one (row, column-tile) of the output.
+-    row = tl.program_id(0)
++    # patch16: widen the per-row base index to int64 at the offset site so the
++    # row*stride base (both the pool_ids read and the out store) can never wrap
++    # past 2^31 at long context. Mirrors patch15's decode-MQA idiom: int64 on the
++    # row/page index, int32 on the inner column tile. Zero-extend is numerically
++    # identical (row, strides >= 0).
++    row = tl.program_id(0).to(tl.int64)
+     tile = tl.program_id(1)
+     cols = tile * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
+     mask = cols < out_cols
