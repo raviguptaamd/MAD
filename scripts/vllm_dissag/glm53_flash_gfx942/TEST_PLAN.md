@@ -31,14 +31,13 @@ fix). RDP must = 8 (wrong → HTTP 400).
 
 **Gate 2 — EP8/EP8 long-context NIAH grid.** `--max-model-len 270000
 --max-num-batched-tokens 16384 --no-enable-prefix-caching` (both legs). Needle at
-depths 0.1/0.5/0.9, lengths {8K,32K,64K,100K,128K,190K,256K}. Expect PASS at every
-cell (21/21). Prompt > `max_model_len` → clean HTTP-400, not mis-recall. Exercises
+depths 0.1/0.5/0.9, lengths {8K,32K,64K,100K,128K,190K,256K}. Target: needle PASS at
+every cell. Prompt > `max_model_len` → clean HTTP-400, not mis-recall. Exercises
 patch14 + kbpb.
 
 **Gate 3 — production router A/B.** With Gate-2 legs up, A/B the production
-`vllm-router` vs the toy proxy (`serve/debug_toyproxy/`) at 256K conc8/16. Expect the
-router's TTFT ~4× better at 256K conc8 (196→48s P90) and no collapse at conc16, recall
-intact through routing.
+`vllm-router` vs the toy proxy (`serve/debug_toyproxy/`) at 256K conc8/16. Target:
+router improves TTFT at high concurrency and holds recall through routing (measure).
 
 **Gate 4 — TP4/TP4 bring-up + recall ceiling.** `serve/tp4/serve_disagg_tp4_prefill.sh`
 + `serve/tp4/serve_disagg_tp4_decode_nomtp.sh` (**MTP OFF**) +
@@ -51,7 +50,7 @@ Needle `74923` in prose filler, `/v1/completions`, temp 0.
 
 | topology | context | depths | pass criterion |
 |---|---|---|---|
-| EP8/EP8 | 8K,32K,64K,100K,128K,190K,256K | 0.1/0.5/0.9 | exact needle every cell (21/21) |
+| EP8/EP8 | 8K,32K,64K,100K,128K,190K,256K | 0.1/0.5/0.9 | exact needle every cell (target) |
 | TP4/TP4 | 4K…62K | 0.1/0.5/0.9 | exact needle to 62K; 64K known-fault |
 
 ---

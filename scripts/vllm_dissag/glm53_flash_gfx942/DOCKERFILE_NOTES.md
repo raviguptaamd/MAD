@@ -57,7 +57,7 @@ docker run -d --name nite --network host --ipc host --privileged --group-add vid
 # Colocated TP4 (1 node, 4 GPU) — PIECEWISE + MTP, recall to 100K+
 docker exec -d nite bash /opt/serve/serve_piecewise.sh
 
-# EP8/EP8 disagg (2 nodes × 8 GPU) — prefill EAGER, decode PIECEWISE+MTP+kbpb, ≤256K
+# EP8/EP8 disagg (2 nodes × 8 GPU) — prefill EAGER, decode PIECEWISE+MTP+kbpb
 docker exec -d nite-prefill bash /opt/serve/serve_disagg_ep8_prefill.sh   # kv_producer node
 docker exec -d nite-decode  bash /opt/serve/serve_disagg_ep8_decode.sh    # kv_consumer node
 docker exec -d nite-prefill bash /opt/serve/serve_disagg_proxy.sh         # toy proxy (or vllm-router)

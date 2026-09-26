@@ -14,9 +14,8 @@ gfx942 numbers.
 Two topologies are provided, **both served by one image** (they differ only in
 launch env, not in the build):
 - **EP8 1P/1D** — DP8 + expert-parallel per leg, MoRIIO KV transfer +
-  allgather/reducescatter MoE dispatch. **Lead production config, verified to 256K.**
-- **TP4 1P/1D** — tensor-parallel 4 per leg, MoRIIO KV transfer only. **Verified
-  clean to ~62K** (decode-side kernel fault walls it at 64K — see RESULTS/limitations).
+  allgather/reducescatter MoE dispatch. **Lead config (validation in progress).**
+- **TP4 1P/1D** — tensor-parallel 4 per leg, MoRIIO KV transfer only (validation in progress).
 
 ---
 
@@ -36,9 +35,9 @@ with **correct long-context recall** on gfx942 took two vLLM fixes:
    before byte offsets, or the transfer reads the wrong offset past the ~4096-token
    wall → recall corruption.
 
-With both applied, plus the config-level long-context unlock (`--max-num-batched-tokens
-16384 --no-enable-prefix-caching`, both legs): **exact needle recall to 256K tokens,
-all depths, EP8/EP8** (21/21 NIAH cells). Details below.
+Both applied, plus the config-level long-context knobs (`--max-num-batched-tokens
+16384 --no-enable-prefix-caching`, both legs). Long-context recall on the from-source
+(modern) stack is under active validation; measured numbers are not published here yet.
 
 ### How this recipe is delivered (READ THIS — it differs from PR254)
 
@@ -121,7 +120,7 @@ docker run -d --name nite --network host --ipc host --privileged --group-add vid
   --entrypoint bash rocmshared/glm53-flash-disagg:gfx942-mi300x -lc "sleep infinity"
 ```
 
-### EP8/EP8 — the lead config (verified to 256K)
+### EP8/EP8 — the lead config (validation in progress)
 
 ```bash
 # node B (decode / kv_consumer) FIRST

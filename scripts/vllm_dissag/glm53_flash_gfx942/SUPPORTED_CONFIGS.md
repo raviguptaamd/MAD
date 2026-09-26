@@ -4,19 +4,19 @@
 index_kpool=4) + KDA linear attention + MTP head, 288 routed experts, 1M ctx. Runs on
 AMD Instinct **MI300X (192GB) and MI325X (256GB)** — both gfx942, identical recipe.
 
-> Status legend: ✅ validated · ⚠️ partial · 🚧 experimental (see Known Limitations).
-> NOTE: config claims are re-verified per build. The envelope below is measured on the
-> pinned overlay stack (see PROVENANCE.md); a stack change requires re-test before the
-> claim carries.
+> **STATUS: validation in progress.** This recipe is under active bring-up on the from-source
+> (modern) stack; recall/perf numbers are intentionally NOT published here yet. Results are being
+> tracked privately during debug and will be added once measured and confirmed on the shipping stack.
+> Status legend (for when populated): ✅ validated · ⚠️ partial · 🚧 experimental.
 
 ## Configurations
 
 | # | Config | GPUs | Prefill | Decode | Recall | Status |
 |---|--------|------|---------|--------|--------|--------|
-| 1 | **EP8/EP8** disagg (1P/1D) | 2×8 | EAGER, DP8+EP | PIECEWISE cudagraph, DP8+EP | **256K** | ✅ |
-| 2 | **TP4×DP2** disagg (1P/1D) | 2×8 | EAGER, TP4×DP2 | PIECEWISE cudagraph, TP4×DP2 | **256K** | ✅ |
-| 3 | **TP4/TP4** disagg (1P/1D) | 2×4 | EAGER, TP4 | PIECEWISE cudagraph, TP4 | ~62K | ⚠️ (64K decode fault) |
-| 4 | **Colocated** (single node) | 4 | — | PIECEWISE + MTP | 100K+ | ✅ (MTP TPOT ~17ms) |
+| 1 | **EP8/EP8** disagg (1P/1D) | 2×8 | EAGER, DP8+EP | PIECEWISE cudagraph, DP8+EP | _pending_ | 🚧 validating |
+| 2 | **TP4×DP2** disagg (1P/1D) | 2×8 | EAGER, TP4×DP2 | PIECEWISE cudagraph, TP4×DP2 | _pending_ | 🚧 validating |
+| 3 | **TP4/TP4** disagg (1P/1D) | 2×4 | EAGER, TP4 | PIECEWISE cudagraph, TP4 | _pending_ | 🚧 validating |
+| 4 | **Colocated** (single node) | 4 | — | PIECEWISE + MTP | _pending_ | 🚧 validating |
 
 Common to all disagg configs: `--max-model-len 270000 --max-num-batched-tokens 16384
 --no-enable-prefix-caching --block-size 4` (block-size MUST be a multiple of index_kpool=4;
