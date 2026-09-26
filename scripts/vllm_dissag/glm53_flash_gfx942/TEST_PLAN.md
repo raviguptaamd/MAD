@@ -2,7 +2,7 @@
 
 Reproduce and gate the recipe on **two nodes** (8×MI300X 192GB or MI325X 256GB, gfx942,
 mlx5 RoCEv2 each). Image built from `Dockerfile` (base pinned by digest — see
-`PROVENANCE.md`). Patches are **baked** (no runtime overlay mounts). The config-level
+the Dockerfile). Patches are **baked** (no runtime overlay mounts). The config-level
 knobs live in the serve scripts.
 
 ## Prerequisites

@@ -16,7 +16,7 @@ Added entry `pyt_vllm_disagg_mori_glm-5.3-flash_mi300`:
 - tags: pyt, vllm, vllm_disagg, mori_ep, inference, gfx942, mi300x, mi325x
 
 ## 2. scripts/vllm_dissag/models.yaml  (append 1 map block)
-Added `GLM-5.3-Flash-MI300:` — DISTINCT from PR254's `GLM-5.3-Flash` because our verified
+Added `GLM-5.3-Flash-MI300:` — DISTINCT from PR254's `GLM-5.3-Flash` because this
 config differs: decode CUDA graph PIECEWISE (not NONE), MNBT 16384, our aiter env. See the
 block for the full env + prefill/decode flags.
 
