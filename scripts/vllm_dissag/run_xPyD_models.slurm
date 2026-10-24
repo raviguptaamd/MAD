@@ -90,6 +90,8 @@ VALID_MODELS=( \
     "GLM-5.1-FP8" \
     "GLM-5.3-Flash-FP8-gfx942" \
     "GLM-5.3-Flash-MXFP4-gfx942" \
+    "GLM-5.3-Flash-FP8-gfx942-hyb" \
+    "GLM-5.3-Flash-MXFP4-gfx942-hyb" \
 )
 
 # Models allowed for CONNECTOR=moriio WIDE_EP=1 (MoRI-EP; legacy RUN_MORI=1)
@@ -100,6 +102,8 @@ MORI_EP_VALID_MODELS=( \
     "GLM-5.1-FP8" \
     "GLM-5.3-Flash-FP8-gfx942" \
     "GLM-5.3-Flash-MXFP4-gfx942" \
+    "GLM-5.3-Flash-FP8-gfx942-hyb" \
+    "GLM-5.3-Flash-MXFP4-gfx942-hyb" \
 )
 
 # Models allowed for CONNECTOR=rixl WIDE_EP=1 EP_BACKEND=deepep (legacy RUN_DEEPEP=1)
@@ -186,7 +190,7 @@ WIDE_EP="${WIDE_EP:-0}"
 # in TP mode is unsupported — the TP argv would double the model's own
 # --compilation-config and drop the mandatory +quant_fp8 op. Reject early.
 # GLM-5.1-FP8 (MLA+DSA) is validated only under MoRI-EP wideEP; moriio+TP is untested.
-WIDE_EP_ONLY_MODELS=( "DeepSeek-V3" "DeepSeek-V3-5layer" "DeepSeek-R1" "GLM-5.1-FP8" "GLM-5.3-Flash-FP8-gfx942" "GLM-5.3-Flash-MXFP4-gfx942" )
+WIDE_EP_ONLY_MODELS=( "DeepSeek-V3" "DeepSeek-V3-5layer" "DeepSeek-R1" "GLM-5.1-FP8" "GLM-5.3-Flash-FP8-gfx942" "GLM-5.3-Flash-MXFP4-gfx942" "GLM-5.3-Flash-FP8-gfx942-hyb" "GLM-5.3-Flash-MXFP4-gfx942-hyb" )
 model_is_wide_ep_only() {
   local m="$1"
   for x in "${WIDE_EP_ONLY_MODELS[@]}"; do [[ "$m" == "$x" ]] && return 0; done

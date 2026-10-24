@@ -116,7 +116,7 @@ optin = [m for m, c in y.items()
 print("[" + ",".join(sorted(optin)) + "]")
 PY
 )"
-_has "$_OPTIN_RM" "[GLM-5.3-Flash-FP8-gfx942,GLM-5.3-Flash-MXFP4-gfx942]" "models.yaml: the GLM-5.3-Flash gfx942 cards are the ONLY read_mode opt-ins"
+_has "$_OPTIN_RM" "[GLM-5.3-Flash-FP8-gfx942,GLM-5.3-Flash-FP8-gfx942-hyb,GLM-5.3-Flash-MXFP4-gfx942,GLM-5.3-Flash-MXFP4-gfx942-hyb]" "models.yaml: the GLM-5.3-Flash gfx942 cards are the ONLY read_mode opt-ins"
 _has "$(cat "$SLURM")" '${MORIIO_READ_MODE:+-e MORIIO_READ_MODE=' "slurm forwards MORIIO_READ_MODE override"
 
 # GLM-5.3-Flash runs MTP on BOTH legs (the transferred KV cache groups must match) with a
@@ -145,7 +145,7 @@ print("[" + ",".join(sorted(m for m, c in y.items()
       if isinstance(c, dict) and (c.get("env") or {}).get("ROUTER_PREFILL_POLICY"))) + "]")
 PY
 )"
-_has "$_OPTIN_RP" "[GLM-5.3-Flash-FP8-gfx942,GLM-5.3-Flash-MXFP4-gfx942]" "models.yaml: the GLM-5.3-Flash gfx942 cards are the ONLY router-policy opt-ins"
+_has "$_OPTIN_RP" "[GLM-5.3-Flash-FP8-gfx942,GLM-5.3-Flash-FP8-gfx942-hyb,GLM-5.3-Flash-MXFP4-gfx942,GLM-5.3-Flash-MXFP4-gfx942-hyb]" "models.yaml: the GLM-5.3-Flash gfx942 cards are the ONLY router-policy opt-ins"
 
 # The slurm probes <root>/$MODEL_WEIGHTS_NAME (default MODEL_NAME). Run its real probe block
 # with srun stubbed to "find" only the directory FOUND on every node.
@@ -174,11 +174,12 @@ print(sorted({(c["env_vars"]["MODEL_NAME"], c["env_vars"]["MODEL_WEIGHTS_NAME"])
               for c in json.load(open(sys.argv[1])) if "MODEL_WEIGHTS_NAME" in c.get("env_vars", {})}))
 PY
 )"
-_eq "$_CARDS_WN" "[('GLM-5.3-Flash-FP8-gfx942', 'GLM-5.3-Flash-FP8'), ('GLM-5.3-Flash-MXFP4-gfx942', 'GLM-5.3-Flash-MXFP4')]" "models.json: only the GLM-5.3 gfx942 cards set MODEL_WEIGHTS_NAME (FP8 / MXFP4 dirs)"
+_eq "$_CARDS_WN" "[('GLM-5.3-Flash-FP8-gfx942', 'GLM-5.3-Flash-FP8'), ('GLM-5.3-Flash-FP8-gfx942-hyb', 'GLM-5.3-Flash-FP8'), ('GLM-5.3-Flash-MXFP4-gfx942', 'GLM-5.3-Flash-MXFP4'), ('GLM-5.3-Flash-MXFP4-gfx942-hyb', 'GLM-5.3-Flash-MXFP4')]" "models.json: only the GLM-5.3 gfx942 cards set MODEL_WEIGHTS_NAME (FP8 / MXFP4 dirs)"
 _CARDS_MISS="$(python3 - "$DIR/models.json" <<'PY'
 import json, sys
 print(len([c for c in json.load(open(sys.argv[1]))
-           if c["env_vars"]["MODEL_NAME"] in ("GLM-5.3-Flash-FP8-gfx942", "GLM-5.3-Flash-MXFP4-gfx942")
+           if c["env_vars"]["MODEL_NAME"] in ("GLM-5.3-Flash-FP8-gfx942", "GLM-5.3-Flash-MXFP4-gfx942",
+                                            "GLM-5.3-Flash-FP8-gfx942-hyb", "GLM-5.3-Flash-MXFP4-gfx942-hyb")
            and "MODEL_WEIGHTS_NAME" not in c["env_vars"]]))
 PY
 )"
@@ -210,8 +211,39 @@ print("[" + ",".join(sorted(m for m, c in y.items() if isinstance(c, dict)
       and ({"PREFILL_EXTRA_ENV", "DECODE_EXTRA_ENV"} & set(c.get("env") or {})))) + "]")
 PY
 )"
-_has "$_OPTIN_LEG" "[GLM-5.3-Flash-MXFP4-gfx942]" "models.yaml: GLM-5.3-Flash-MXFP4-gfx942 is the ONLY per-leg env opt-in"
+_has "$_OPTIN_LEG" "[GLM-5.3-Flash-MXFP4-gfx942,GLM-5.3-Flash-MXFP4-gfx942-hyb]" "models.yaml: the GLM-5.3-Flash MXFP4 cards are the ONLY per-leg env opt-ins"
 _eq "$(_probe "$_NV/GLM-5.3-Flash-MXFP4" GLM-5.3-Flash-MXFP4-gfx942 GLM-5.3-Flash-MXFP4)" "$_NV/GLM-5.3-Flash-MXFP4" "probe: GLM-5.3 MXFP4 gfx942 resolves the GLM-5.3-Flash-MXFP4 dir"
+
+# GLM-5.3-Flash hybrid-prefill cards: prefill TP4 x DP2 (+ block 4352, + KDA retention only with prefix caching),
+# decode argv identical to the EP8 card of the same checkpoint; PREFILL_TP is rejected outside wideEP.
+echo ""
+echo "=== GLM-5.3-Flash hybrid prefill (gfx942-hyb): TP4 x DP2 prefill, EP8 decode unchanged ==="
+_out_pc() { # model role prefix_cache -> full dry-run output
+  env -i PATH="$PATH" HOME="$HOME" NIXL_COOKBOOK_PATH="$DIR" DRY_RUN=1 NODE_RANK="$2" xP=1 yD=1 \
+    CONNECTOR=moriio WIDE_EP=1 EP_BACKEND=mori MODEL_NAME="$1" MODEL_PATH=/m/GLM53 ENABLE_PREFIX_CACHE="$3" \
+    MASTER_ADDR=10.0.0.1 IPADDRS=10.0.0.1,10.0.0.2 GPUS_PER_NODE=8 SLURM_JOB_ID=ASSERT \
+    PROXY_TYPE=vllm_router ROUTER_PORT=30000 bash "$DIR/vllm_disagg.sh" 2>/dev/null
+}
+for _c in GLM-5.3-Flash-FP8-gfx942 GLM-5.3-Flash-MXFP4-gfx942; do
+  HP="$(_out_pc ${_c}-hyb 0 0 | _argv_of | tr '\n' ' ')"; HPC="$(_out_pc ${_c}-hyb 0 1 | _argv_of | tr '\n' ' ')"
+  HD="$(_out_pc ${_c}-hyb 1 1 | _argv_of)"; ED="$(_out_pc ${_c} 1 1 | _argv_of)"
+  _has    "$HP"  "-tp 4 " "${_c}-hyb prefill: -tp 4"
+  _has    "$HP"  "--data-parallel-size 2 " "${_c}-hyb prefill: --data-parallel-size 2"
+  _has    "$HP"  "--data-parallel-size-local 2 " "${_c}-hyb prefill: --data-parallel-size-local 2"
+  _has    "$HP"  "--api-server-count=2 " "${_c}-hyb prefill: --api-server-count=2"
+  _has    "$HP"  "--block-size 4352 " "${_c}-hyb prefill: --block-size 4352"
+  _hasnot "$HP"  "--prefix-cache-retention-interval" "${_c}-hyb prefill, prefix caching off: no retention flag"
+  _has    "$HPC" "--prefix-cache-retention-interval 17408 " "${_c}-hyb prefill, prefix caching on: retention 17408"
+  _hasnot "$(tr '\n' ' ' <<<"$HD")" "--prefix-cache-retention-interval" "${_c}-hyb decode: no retention flag"
+  _eq "$HD" "$ED" "${_c}-hyb decode argv == ${_c} decode argv"
+done
+_has "$(_out_pc GLM-5.3-Flash-MXFP4-gfx942-hyb 0 0)" "===LEGENV log_prefix=prefill VLLM_ROCM_MXFP4_MOE_FP8BLOCK=1===" "GLM-5.3 MXFP4-hyb prefill: MoE experts as exact FP8 blocks (per-leg env)"
+_has "$C" '[[ "${PREFILL_TP:-1}" != "1" ]] && _router_dp_local="${PREFILL_DP_LOCAL}"' "moriio.sh: router expands prefill to PREFILL_DP_LOCAL ranks when PREFILL_TP>1"
+_TPREJ="$(env -i PATH="$PATH" HOME="$HOME" NIXL_COOKBOOK_PATH="$DIR" DRY_RUN=1 NODE_RANK=0 xP=1 yD=1 CONNECTOR=moriio \
+  WIDE_EP=0 EP_BACKEND=mori MODEL_NAME=GLM-5.3-Flash-FP8-gfx942-hyb MODEL_PATH=/m/GLM53 MASTER_ADDR=10.0.0.1 \
+  IPADDRS=10.0.0.1,10.0.0.2 GPUS_PER_NODE=8 SLURM_JOB_ID=ASSERT PROXY_TYPE=vllm_router ROUTER_PORT=30000 \
+  bash "$DIR/vllm_disagg.sh" 2>&1)"
+_has "$_TPREJ" "PREFILL_TP=4 needs WIDE_EP=1" "PREFILL_TP>1 is rejected outside wideEP"
 
 echo ""
 echo "======================================================"

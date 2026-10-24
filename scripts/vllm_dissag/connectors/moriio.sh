@@ -202,6 +202,13 @@ connector_launch_worker() {
     if [[ "${BENCHMARK_SCRIPT:-}" == "agentic" || "${ENABLE_PREFIX_CACHE:-0}" == "1" ]]; then
         _prefix_cache_flag=""
     fi
+    # Prefill-only prefix-cache retention (models.yaml env PREFILL_PREFIX_CACHE_RETENTION, tokens): keep linear-attention
+    # (Mamba/KDA) states every N tokens, not only at prompt tails, so a request sharing a prefix but not the tail of an
+    # earlier one still hits. Only with prefix caching on.
+    local _retention_args=()
+    if [[ -z "$_prefix_cache_flag" && "$log_prefix" == "prefill" && -n "${PREFILL_PREFIX_CACHE_RETENTION:-}" ]]; then
+        _retention_args=(--prefix-cache-retention-interval "${PREFILL_PREFIX_CACHE_RETENTION}")
+    fi
 
     if parallelism_is_wide_ep; then
         # ---- WIDE_EP=1 (MoriEP) ----
@@ -210,9 +217,18 @@ connector_launch_worker() {
         local _all2all="${PREFILL_MORI_BACKEND}"
         [[ "$log_prefix" == "decode" ]] && _all2all="${DECODE_MORI_BACKEND}"
 
+        # Per-leg layout: prefill may run TP>1 (PREFILL_TP, PREFILL_DP_LOCAL ranks per node, own block size
+        # PREFILL_KV_BLOCK_SIZE); decode is always one DP rank per GPU.
+        local _tp=1 _dp_local="${DP_PARALLEL_SIZE_LOCAL}" _block="${KV_BLOCK_SIZE:-1}"
+        if [[ "$log_prefix" == "prefill" ]]; then
+            _tp="${PREFILL_TP:-1}"
+            _dp_local="${PREFILL_DP_LOCAL:-${DP_PARALLEL_SIZE_LOCAL}}"
+            _block="${PREFILL_KV_BLOCK_SIZE:-${_block}}"
+        fi
+
         local extra_args=() kv_args=()
         if [[ "$role" == "master" ]]; then
-            extra_args+=(--api-server-count=${_GPUS_PER_NODE})
+            extra_args+=(--api-server-count=${_dp_local})
             local kv_config; kv_config=$(_moriio_build_kv_transfer_config "${kv_role}")
             kv_args+=(--kv-transfer-config "${kv_config}")
         else
@@ -224,7 +240,6 @@ connector_launch_worker() {
         # GPU-faults), and KV_CACHE_MEMORY_BYTES to SKIP the boot profiling forward
         # (that forward is the only path that calls AITER's eager per-token fp8
         # quant, which has the aiter_tensor_t torch_guard bug -> engine-init crash).
-        local _block="${KV_BLOCK_SIZE:-1}"
         local _kvdtype="${KV_CACHE_DTYPE:-fp8}"
         local mem_args=()
         [[ -n "${KV_CACHE_MEMORY_BYTES:-}" ]] && mem_args+=(--kv-cache-memory-bytes "${KV_CACHE_MEMORY_BYTES}")
@@ -232,9 +247,9 @@ connector_launch_worker() {
         if [[ "${DRY_RUN:-0}" == "1" ]]; then
             _dryrun_emit "moriio" "${log_prefix}" "${role}" \
                 vllm serve "${MODEL_PATH}" \
-                    -tp 1 \
+                    -tp "${_tp}" \
                     --data-parallel-size "${dp_size}" \
-                    --data-parallel-size-local "${DP_PARALLEL_SIZE_LOCAL}" \
+                    --data-parallel-size-local "${_dp_local}" \
                     --data-parallel-address "${dp_addr}" \
                     --data-parallel-rpc-port "${RPC_PORT}" \
                     --enable-expert-parallel \
@@ -243,7 +258,7 @@ connector_launch_worker() {
                     "${mem_args[@]}" \
                     --kv-cache-dtype "${_kvdtype}" \
                     --block-size "${_block}" \
-                    ${_prefix_cache_flag} \
+                    ${_prefix_cache_flag} "${_retention_args[@]}" \
                     --all2all-backend "${_all2all}" \
                     --trust-remote-code \
                     --distributed-timeout-seconds "${DISTRIBUTED_TIMEOUT_SECONDS:-7200}" \
@@ -252,9 +267,9 @@ connector_launch_worker() {
         fi
 
         vllm serve ${MODEL_PATH} \
-            -tp 1 \
+            -tp "${_tp}" \
             --data-parallel-size "${dp_size}" \
-            --data-parallel-size-local ${DP_PARALLEL_SIZE_LOCAL} \
+            --data-parallel-size-local "${_dp_local}" \
             --data-parallel-address "${dp_addr}" \
             --data-parallel-rpc-port ${RPC_PORT} \
             --enable-expert-parallel \
@@ -263,7 +278,7 @@ connector_launch_worker() {
             "${mem_args[@]}" \
             --kv-cache-dtype "${_kvdtype}" \
             --block-size "${_block}" \
-            ${_prefix_cache_flag} \
+            ${_prefix_cache_flag} "${_retention_args[@]}" \
             --all2all-backend "${_all2all}" \
             --trust-remote-code \
             --distributed-timeout-seconds ${DISTRIBUTED_TIMEOUT_SECONDS:-7200} \
@@ -359,7 +374,9 @@ connector_start_proxy() {
         # single unit -> 1. Passing 8 on the TP path makes the router round-robin
         # to DP ranks 0..7 while the TP server only has rank 0 -> every non-rank-0
         # request fails "data_parallel_rank N out of range [0,1)" (7/8 -> 500).
+        # With PREFILL_TP>1 the router expands each prefill node to PREFILL_DP_LOCAL ranks.
         local _router_dp_local="${DP_PARALLEL_SIZE_LOCAL}"
+        [[ "${PREFILL_TP:-1}" != "1" ]] && _router_dp_local="${PREFILL_DP_LOCAL}"
         parallelism_is_wide_ep || _router_dp_local=1
         echo "Starting vllm-router (MoRIIO): HTTP ${ROUTER_PORT}"
         echo "  prefill=${PREFILL_URL}  decode=${DECODE_URL}  dp_local=${_router_dp_local}"
