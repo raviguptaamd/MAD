@@ -1,12 +1,12 @@
 ---
 name: glm53-flash-gfx942
-description: Builds, launches and verifies the GLM-5.3-Flash 1P/1D disaggregated cards on gfx942 (MI300X / MI325X), FP8 (GLM-5.3-Flash-FP8-gfx942) or MXFP4 (GLM-5.3-Flash-MXFP4-gfx942), and checks each leg runs the intended expert format. Use before submitting a GLM-5.3-Flash card, when its load log or accuracy looks wrong, or when choosing between the FP8 and MXFP4 checkpoints.
+description: Builds, launches and verifies the GLM-5.3-Flash 1P/1D disaggregated cards on gfx942 (MI300X / MI325X), FP8 or MXFP4 checkpoint with EP8 prefill (GLM-5.3-Flash-{FP8,MXFP4}-gfx942) or hybrid TP4 x DP2 prefill (...-gfx942-hyb), and checks each leg runs the intended layout and expert format. Use before submitting a GLM-5.3-Flash card, when its load log or accuracy looks wrong, or when choosing between the checkpoints or the prefill layouts.
 ---
 
 # GLM-5.3-Flash on gfx942
 
-Both cards use one image (`docker/vllm_disagg_inference.glmv53flash.gfx942.ubuntu.amd.Dockerfile`) and the same flags:
-EP8 prefill (eager) + EP8 decode (MTP, FULL_AND_PIECEWISE), MoRIIO READ, max-model-len 760000.
+All four cards use one image (`docker/vllm_disagg_inference.glmv53flash.gfx942.ubuntu.amd.Dockerfile`) and the same decode
+leg: EP8 (MTP, FULL_AND_PIECEWISE), MoRIIO READ, max-model-len 760000. Prefill is eager, EP8 or hybrid TP4 x DP2.
 
 ## 1. Pick the card
 
@@ -14,6 +14,12 @@ EP8 prefill (eager) + EP8 decode (MTP, FULL_AND_PIECEWISE), MoRIIO READ, max-mod
 |---|---|---|---|
 | `GLM-5.3-Flash-FP8-gfx942` | `GLM-5.3-Flash-FP8` (`zai-org/GLM-5.3-Flash`) | 306 GB | baseline |
 | `GLM-5.3-Flash-MXFP4-gfx942` | `GLM-5.3-Flash-MXFP4` (`amd/GLM-5.3-Flash-Quark-MXFP4`) | 173 GB | many long sessions; decode KV per GPU +17% (MI325X) / +31% (MI300X) |
+
+Then the prefill layout: the `-hyb` cards (`GLM-5.3-Flash-FP8-gfx942-hyb`, `GLM-5.3-Flash-MXFP4-gfx942-hyb`) run prefill as
+TP4 x DP2 (2 engines, attention over 4 GPUs, experts still EP over all 8) with a KDA prefix-cache state kept every 17408
+tokens. Each long prompt prefills ~2x faster and a session's second request resumes from the shared prefix, so time to
+first token on agentic traffic drops; but only 2 prompts prefill at once instead of 8, so bursts of concurrent cold
+prompts favour the EP8 cards. The settings are listed in the README ("EP8 or hybrid prefill").
 
 gfx942 has no FP4 matrix math. The MXFP4 card converts the experts exactly to FP8 128x128 blocks on prefill and keeps
 them 4-bit on decode; accuracy equals the FP8 card. Its decode step is ~3-4% slower than FP8.
@@ -56,6 +62,13 @@ grep -h "converted exactly to FP8 128x128" $L/prefill_NODE0.log | head -1    # p
 grep -h "FlyDSL W4A16 with exact e2m1"     $L/decode_NODE*.log  | head -1    # decode: experts 4-bit
 grep -h "Model loading took"               $L/*_NODE*.log | sort -u          # prefill 54.33 GiB, decode 38.84 GiB
 grep -h "GPU KV cache size"                $L/decode_NODE*.log | head -1
+```
+
+`-hyb` cards, prefill node (vLLM logs only non-default arguments):
+
+```bash
+grep -ho "'tensor_parallel_size': [0-9]*"            $L/prefill_NODE0.log | head -1   # 4
+grep -ho "'prefix_cache_retention_interval': [0-9]*" $L/prefill_NODE0.log | head -1   # 17408 (agentic / prefix caching on)
 ```
 
 Expected decode KV per GPU at gpu-memory-utilization 0.6: FP8 ~6.83M (MI325X) / ~3.71M (MI300X); MXFP4 ~7.97M /

@@ -397,6 +397,9 @@ GLM-5.3-Flash-FP8-gfx942-hyb:
     GLM53_HETERO_TP_FANIN: "1"
     ROUTER_DECODE_DP_PIN: "0"
     PREFILL_PREFIX_CACHE_RETENTION: "17408"
+    # Server HTTP keep-alive above the router's 50 s idle-pool timeout: otherwise the router can reuse a
+    # connection the server is closing and the request fails "connection closed before message completed".
+    VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
     VLLM_USE_V1: "1"
     VLLM_ROCM_USE_AITER: "1"
     VLLM_ROCM_USE_AITER_MLA: "1"
@@ -452,6 +455,9 @@ GLM-5.3-Flash-MXFP4-gfx942-hyb:
     GLM53_HETERO_TP_FANIN: "1"
     ROUTER_DECODE_DP_PIN: "0"
     PREFILL_PREFIX_CACHE_RETENTION: "17408"
+    # Server HTTP keep-alive above the router's 50 s idle-pool timeout: otherwise the router can reuse a
+    # connection the server is closing and the request fails "connection closed before message completed".
+    VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
     VLLM_USE_V1: "1"
     VLLM_ROCM_USE_AITER: "1"
     VLLM_ROCM_USE_AITER_MLA: "1"
