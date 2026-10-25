@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GLM-5.3-Flash hybrid-prefill cards on AMD Instinct gfx942 — TP4×DP2 prefill + prefix-cache retention</title>
+<style>
+  :root { --ink:#1d2330; --mute:#5b6475; --line:#dde2ea; --bg:#f6f8fb; --ok:#1f8a4c; --warn:#b26b00; --new:#d6242b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.55 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink); background:#fff; }
+  header { background:#111723; color:#fff; padding:36px 48px 30px; }
+  header h1 { margin:0 0 6px; font-size:26px; font-weight:650; }
+  header p { margin:0; color:#c7cedb; }
+  main { max-width:1120px; margin:0 auto; padding:28px 48px 60px; }
+  h2 { font-size:20px; margin:38px 0 10px; padding-bottom:6px; border-bottom:2px solid var(--line); }
+  h3 { font-size:16px; margin:22px 0 8px; }
+  p { margin:8px 0; }
+  .kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin:22px 0 6px; }
+  .kpi { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:14px 16px; }
+  .kpi .v { font-size:26px; font-weight:700; }
+  .kpi .l { color:var(--mute); font-size:13px; }
+  .kpi .d { color:var(--ok); font-size:13px; font-weight:600; }
+  table { border-collapse:collapse; width:100%; margin:8px 0 14px; font-size:14px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { background:var(--bg); font-weight:600; }
+  td.n, th.n { text-align:right; font-variant-numeric:tabular-nums; }
+  .pass { color:var(--ok); font-weight:650; }
+  .warn { color:var(--warn); font-weight:650; }
+  .note { color:var(--mute); font-size:13px; }
+  .box { background:var(--bg); border:1px solid var(--line); border-left:4px solid var(--new); border-radius:6px; padding:12px 16px; margin:12px 0; }
+  footer { color:var(--mute); font-size:12px; border-top:1px solid var(--line); margin-top:40px; padding-top:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>GLM-5.3-Flash hybrid-prefill cards on AMD Instinct gfx942</h1>
+  <p>TP4×DP2 prefill (eager) + EP8 decode (MTP, FULL_AND_PIECEWISE) + prefill prefix-cache retention 17408 ·
+  disaggregated over MoRIIO READ · max-model-len 760K · same image as EP8 cards · 25 Oct 2026</p>
+</header>
+<main>
+
+<h2>What these cards are</h2>
+<p><code>GLM-5.3-Flash-FP8-gfx942-hyb</code> and <code>GLM-5.3-Flash-MXFP4-gfx942-hyb</code> run the same image and
+decode leg as the EP8 cards, with the prefill leg changed to TP4×DP2 (attention over 4 GPUs, experts still EP over all 8)
+and a KDA prefix-cache state kept every 17408 tokens. Each long prompt prefills about twice as fast and a session's second
+request resumes from the shared prefix instead of re-prefilling it. The trade-off is fewer concurrent cold prefills (2
+engines instead of 8). Pick these cards for interactive long-context traffic with session reuse; pick the EP8 cards for
+many concurrent cold long prompts.</p>
+
+<div class="kpis">
+  <div class="kpi"><div class="v">1.9–2.6 s</div><div class="l">256K TTFT p50 at 1–4 sessions (MI325X)</div><div class="d">EP8: 4.4–6.1 s</div></div>
+  <div class="kpi"><div class="v">14</div><div class="l">256K capacity, MI325X (target: 2)</div><div class="d">EP8: 12</div></div>
+  <div class="kpi"><div class="v">460/460</div><div class="l">NIAH sweep, both checkpoints, both platforms</div><div class="d">0 disagreements</div></div>
+  <div class="kpi"><div class="v">0</div><div class="l">errors in all 32 AgentX steps (16 per platform)</div></div>
+</div>
+
+<h2>Pinned stack</h2>
+<p>Same image as the EP8 cards (<code>docker/vllm_disagg_inference.glmv53flash.gfx942.ubuntu.amd.Dockerfile</code>):</p>
+<table>
+<tr><th>Component</th><th>Repo</th><th>Commit</th></tr>
+<tr><td>vLLM</td><td>raviguptaamd/vllm <code>glm53-flash-gfx942-mxfp4-mad</code></td><td><code>439eabe5</code></td></tr>
+<tr><td>AITER</td><td>raviguptaamd/aiter <code>glm53-flash-gfx942-fp4lut</code></td><td><code>11a6be6e</code></td></tr>
+<tr><td>MoRI</td><td>ROCm/mori</td><td><code>78b7a5f3</code></td></tr>
+<tr><td>vllm-router</td><td>raviguptaamd/router <code>glm53-flash-gfx942-hybrid</code></td><td><code>076800bf</code></td></tr>
+<tr><td>FlyDSL</td><td>pypi</td><td>0.2.2</td></tr>
+</table>
+
+<h2>What the -hyb cards add (models.yaml env)</h2>
+<table>
+<tr><th>Setting</th><th>Value</th><th>Effect</th></tr>
+<tr><td><code>PREFILL_TP</code></td><td>4</td><td>prefill <code>-tp 4 --data-parallel-size 2</code></td></tr>
+<tr><td><code>PREFILL_KV_BLOCK_SIZE</code></td><td>4352</td><td>prefill <code>--block-size 4352</code></td></tr>
+<tr><td><code>GLM53_HETERO_TP_FANIN</code></td><td>1</td><td>KDA state fan-in from TP4 prefill to TP1 decode</td></tr>
+<tr><td><code>ROUTER_DECODE_DP_PIN</code></td><td>0</td><td>router does not pin a decode DP rank</td></tr>
+<tr><td><code>PREFILL_PREFIX_CACHE_RETENTION</code></td><td>17408</td><td>prefill <code>--prefix-cache-retention-interval 17408</code> (with prefix caching)</td></tr>
+<tr><td><code>VLLM_HTTP_TIMEOUT_KEEP_ALIVE</code></td><td>120</td><td>above the router's 50 s idle-pool timeout</td></tr>
+</table>
+
+<h2>Accuracy</h2>
+<table>
+<tr><th>Platform</th><th>Checkpoint</th><th>GSM8K (1319)</th><th>NIAH short (160)</th><th>NIAH long (18, to 704K)</th></tr>
+<tr><td>MI325X</td><td>FP8</td><td>97.27%</td><td>159/160</td><td>18/18</td></tr>
+<tr><td>MI325X</td><td>MXFP4</td><td>97.73%</td><td>160/160</td><td>18/18</td></tr>
+<tr><td>MI300X</td><td>FP8</td><td>97.42%</td><td>160/160</td><td>18/18</td></tr>
+<tr><td>MI300X</td><td>MXFP4</td><td>97.04%</td><td>160/160</td><td>18/18</td></tr>
+</table>
+
+<h2>NIAH sweep (seeded, paired, on the final recipe)</h2>
+<table>
+<tr><th>Platform</th><th>FP8 short (400)</th><th>MXFP4 short (400)</th><th>FP8 long (60)</th><th>MXFP4 long (60)</th><th>Discordant</th></tr>
+<tr><td>MI325X</td><td>400/400</td><td>400/400</td><td>60/60</td><td>60/60</td><td>0</td></tr>
+<tr><td>MI300X</td><td>400/400</td><td>400/400</td><td>60/60</td><td>60/60</td><td>0</td></tr>
+</table>
+
+<h2>Customer AgentX (conformance_256k / 512k, 900 s per step)</h2>
+<h3>MI325X (prefill g32 → decode g39)</h3>
+<table>
+<tr><th>Workload</th><th>Conc</th><th>TTFT p50 s FP8 / MXFP4</th><th>TTFT p90 s</th><th>Tok/s/user p50</th><th>Tok/s/user p10</th><th>Requests</th><th>Errors</th><th>TTFT SLO</th></tr>
+<tr><td>256k</td><td>1</td><td>1.92 / 1.85</td><td>5.91 / 5.89</td><td>85.8 / 83.3</td><td>79.5 / 76.4</td><td>51 / 50</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>256k</td><td>2</td><td>1.92 / 1.75</td><td>4.91 / 6.43</td><td>85.1 / 83.3</td><td>78.6 / 77.4</td><td>85 / 86</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>256k</td><td>4</td><td>2.58 / 2.51</td><td>6.05 / 5.70</td><td>85.3 / 83.3</td><td>77.7 / 76.2</td><td>202 / 188</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>256k</td><td>8</td><td>3.51 / 3.48</td><td>7.80 / 7.37</td><td>82.2 / 78.7</td><td>75.8 / 72.6</td><td>318 / 310</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>512k</td><td>1</td><td>1.64 / 1.60</td><td>6.63 / 5.89</td><td>86.0 / 84.3</td><td>80.6 / 79.1</td><td>58 / 60</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>512k</td><td>2</td><td>2.18 / 2.13</td><td>9.96 / 10.74</td><td>84.3 / 83.4</td><td>77.4 / 77.6</td><td>121 / 123</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>512k</td><td>4</td><td>2.87 / 2.77</td><td>12.31 / 12.18</td><td>83.5 / 80.1</td><td>74.9 / 72.2</td><td>215 / 215</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>512k</td><td>8</td><td>5.47 / 5.43</td><td>19.60 / 18.65</td><td>82.3 / 80.0</td><td>72.2 / 71.4</td><td>365 / 362</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+</table>
+<p class="note">SLOs: 256K p50 ≤ 5 s, p90 ≤ 15 s; 512K p50 ≤ 15 s, p90 ≤ 45 s. All 16 steps pass on both checkpoints.</p>
+
+<h3>MI300X (prefill 148 → decode 113)</h3>
+<table>
+<tr><th>Workload</th><th>Conc</th><th>TTFT p50 s FP8 / MXFP4</th><th>TTFT p90 s</th><th>Tok/s/user p50</th><th>Tok/s/user p10</th><th>Requests</th><th>Errors</th><th>TTFT SLO</th></tr>
+<tr><td>256k</td><td>1</td><td>2.01 / 1.86</td><td>4.55 / 4.50</td><td>84.4 / 82.0</td><td>79.2 / 75.4</td><td>45 / 47</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>256k</td><td>2</td><td>2.03 / 2.01</td><td>5.79 / 4.93</td><td>83.5 / 82.2</td><td>75.6 / 75.3</td><td>83 / 77</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>256k</td><td>4</td><td>3.17 / 3.28</td><td>7.43 / 7.08</td><td>80.5 / 76.0</td><td>73.7 / 69.0</td><td>180 / 179</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>256k</td><td>8</td><td>5.27 / 5.23</td><td>12.82 / 11.41</td><td>78.8 / 71.8</td><td>70.4 / 66.1</td><td>292 / 287</td><td>0 / 0</td><td class="warn">miss (p50) / miss</td></tr>
+<tr><td>512k</td><td>1</td><td>2.35 / 2.37</td><td>8.68 / 8.54</td><td>82.8 / 83.6</td><td>78.5 / 76.2</td><td>46 / 46</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>512k</td><td>2</td><td>2.39 / 2.61</td><td>12.01 / 14.59</td><td>82.5 / 80.1</td><td>74.9 / 72.4</td><td>108 / 98</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>512k</td><td>4</td><td>5.08 / 4.54</td><td>18.97 / 17.59</td><td>80.1 / 77.5</td><td>73.8 / 67.8</td><td>179 / 187</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+<tr><td>512k</td><td>8</td><td>9.90 / 10.40</td><td>37.08 / 36.49</td><td>79.5 / 74.8</td><td>71.0 / 64.6</td><td>256 / 247</td><td>0 / 0</td><td class="pass">pass / pass</td></tr>
+</table>
+<p class="note">MI300X at 256K c8 misses p50 by ~0.25 s on both checkpoints (MI300X prefill is ~20% slower than MI325X). All other steps pass.</p>
+
+<h2>Capacity per prefill pod (customer method; target: 2 users at 256K and 512K)</h2>
+<table>
+<tr><th>Context</th><th>MI325X FP8</th><th>MI325X MXFP4</th><th>MI300X FP8</th><th>MI300X MXFP4</th></tr>
+<tr><td>256K</td><td class="pass">14</td><td class="pass">14</td><td class="pass">9</td><td class="pass">8</td></tr>
+<tr><td>512K</td><td class="pass">7</td><td class="pass">8</td><td class="pass">5</td><td class="pass">6</td></tr>
+</table>
+<p class="note">All limited by TTFT. EP8 cards for comparison: MI325X 12/12 (256K) and 7/4-7 (512K).</p>
+
+<h2>MAD harness validation</h2>
+<p>The <code>-hyb</code> cards launch correctly through the MAD unified launcher (<code>run_xPyD_models.slurm</code>) with
+the image built from the Dockerfile. Confirmed per-leg:</p>
+<ul>
+  <li>Prefill: <code>tensor_parallel_size: 4</code>, <code>block_size: 4352</code>, <code>prefix_cache_retention_interval: 17408</code> (agentic path)</li>
+  <li>Prefill MXFP4: "MXFP4 MoE experts converted exactly to FP8 128×128 blocks"</li>
+  <li>Decode: "MXFP4 MoE experts on AITER FlyDSL W4A16 with exact e2m1 decode", unchanged from EP8 cards</li>
+</ul>
+<p>10-seed NIAH on MI300X (148 → 113): MXFP4-hyb 35.8/40, FP8-hyb 35.9/40 (equivalent; the 35K dip is the documented
+repetitive-filler caveat, present on both checkpoints and on the EP8 cards). AgentX conformance_256k: 428 measured
+requests, 0 measured errors, TTFT p50 6.89 s at concurrency 16.</p>
+
+<h2>Known limitations</h2>
+<ul>
+  <li>MXFP4 per-user decode speed trails FP8 by 4–9% on MI300X at 4–8 sessions (the 4-bit FlyDSL W4A16 kernel's
+  small-batch efficiency). Does not affect any TTFT result or capacity number. A variant with decode experts also
+  converted to FP8 blocks (<code>HYBMXRD</code>) closes the gap at the cost of the MXFP4 decode KV gain.</li>
+  <li>The <code>-hyb</code> cards have 2 prefill engines instead of 8: bursts of many concurrent cold long prompts
+  are served faster by the EP8 cards.</li>
+</ul>
+
+<footer>
+  Generated 25 Oct 2026. Data: <code>reports/customer_criteria/data/</code> in the workspace.
+  Cards: <code>GLM-5.3-Flash-{FP8,MXFP4}-gfx942-hyb</code> in <code>models.yaml</code>.
+  Tests: gate_check 37/37, argv_assert 77/77. All 48 EP8 card dry-run outputs byte-identical.
+</footer>
+
+</main>
+</body>
+</html>
