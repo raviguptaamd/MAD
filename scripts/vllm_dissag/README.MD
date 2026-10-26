@@ -60,6 +60,13 @@ recipes need the wideEP serve path).
 | `GLM-5.3-Flash-FP8-gfx942-hyb` | MoE + DSA + KDA | 3 (moriio wideEP only) | gfx942; FP8 card with hybrid TP4 x DP2 prefill and prefill prefix-cache retention: lower long-prompt TTFT, fewer concurrent cold prefills |
 | `GLM-5.3-Flash-MXFP4-gfx942-hyb` | MoE + DSA + KDA | 3 (moriio wideEP only) | gfx942; MXFP4 card with the same hybrid prefill and retention |
 
+> **GLM-5.3-Flash expert all-to-all:** the four GLM-5.3-Flash-gfx942 cards use **MoRIIO** for the
+> prefill→decode KV transfer and vLLM **`allgather_reducescatter`** for the expert all-to-all (the
+> cards set `VLLM_ALL2ALL_BACKEND` / `DECODE_MORI_BACKEND` = `allgather_reducescatter`, overriding
+> the `mori` wideEP default of combo 3). This is the validated, SLO-meeting recipe. MoRI-EP
+> (`mori_high_throughput` / `mori_low_latency`) is a tested, accurate opt-in but not the default;
+> to enable it see `skills/glm53-flash-gfx942/Recipe_enable_MoriEP.md`.
+
 ## Prerequisites
 
 - A Slurm cluster with `xP + yD` nodes (minimum 2: `xP=1`, `yD=1`), 8 GPUs/node.

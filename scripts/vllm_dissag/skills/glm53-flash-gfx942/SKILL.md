@@ -24,6 +24,10 @@ prompts favour the EP8 cards. The settings are listed in the README ("EP8 or hyb
 gfx942 has no FP4 matrix math. The MXFP4 card converts the experts exactly to FP8 128x128 blocks on prefill and keeps
 them 4-bit on decode; accuracy equals the FP8 card. Its decode step is ~3-4% slower than FP8.
 
+Expert all-to-all: all four cards use **MoRIIO** (KV transfer) + vLLM **`allgather_reducescatter`** (expert all-to-all);
+the cards override the combo-3 `mori` wideEP default. MoRI-EP is a tested, accurate opt-in (decode-TPOT parity on MI325X,
+~6-7% slower on MI300X), not the default — to enable it see `Recipe_enable_MoriEP.md` in this folder.
+
 ## 2. Build and check the image
 
 ```bash
