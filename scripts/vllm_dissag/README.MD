@@ -163,7 +163,9 @@ The `-hyb` cards add these `models.yaml` env settings to their EP8 card (all opt
 | `GLM53_HETERO_TP_FANIN=1` | MoRIIO hands the KDA state of a TP4 prefill engine to the TP1 decode ranks |
 | `ROUTER_DECODE_DP_PIN=0` | the router does not pin a decode DP rank to the prefill rank |
 | `PREFILL_PREFIX_CACHE_RETENTION=17408` | with prefix caching on, prefill `--prefix-cache-retention-interval 17408`: keep a KDA (linear-attention) state every 17408 tokens, so the second request of a session resumes from the shared prefix instead of re-prefilling it |
-| `VLLM_HTTP_TIMEOUT_KEEP_ALIVE=120` | server keep-alive above the router's 50 s idle-pool timeout, so the router never reuses a connection the server is closing |
+
+All four GLM-5.3-Flash-gfx942 cards also set `VLLM_HTTP_TIMEOUT_KEEP_ALIVE=120`: server keep-alive above the
+router's 50 s idle-pool timeout, so the router never reuses a connection the server is closing.
 
 Run a card (one prefill node and one decode node; MI325X with Broadcom NICs also needs the NIC exports from
 [`skills/moriio-nics-thor2`](skills/moriio-nics-thor2/SKILL.md)):

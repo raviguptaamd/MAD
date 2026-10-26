@@ -288,6 +288,9 @@ GLM-5.3-Flash-FP8-gfx942:
   # Validated: NIAH 256K / 512K / 750K through the router with MTP on both legs and a
   # FULL_AND_PIECEWISE decode graph at max-model-len 760000.
   env:
+    # Server HTTP keep-alive above the router's 50 s idle-pool timeout: otherwise the router can reuse a
+    # connection the server is closing and the request fails "connection closed before message completed".
+    VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
     VLLM_USE_V1: "1"
     VLLM_ROCM_USE_AITER: "1"
     VLLM_ROCM_USE_AITER_MLA: "1"
@@ -336,6 +339,9 @@ GLM-5.3-Flash-MXFP4-gfx942:
   # Validated on MI325X against the FP8 card: GSM8K 97.32% both (3 repeats), random NIAH 16K-704K identical,
   # AgentX 256k / 512k throughput within FP8's run-to-run range; KV-bound capacity +6-13% tokens/s.
   env:
+    # Server HTTP keep-alive above the router's 50 s idle-pool timeout: otherwise the router can reuse a
+    # connection the server is closing and the request fails "connection closed before message completed".
+    VLLM_HTTP_TIMEOUT_KEEP_ALIVE: "120"
     VLLM_USE_V1: "1"
     VLLM_ROCM_USE_AITER: "1"
     VLLM_ROCM_USE_AITER_MLA: "1"

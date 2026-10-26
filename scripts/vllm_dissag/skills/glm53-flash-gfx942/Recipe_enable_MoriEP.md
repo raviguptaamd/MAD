@@ -104,3 +104,13 @@ Decode TPOT, 8K/1K, `vllm bench serve`, median (all-gather | MoRI-EP buffer 256)
 MoRI-EP is decode-TPOT parity on MI325X and ~6–7% slower on MI300X; TTFT is comparable. It does
 **not** close the MXFP4-vs-FP8 decode gap on MI300X. The default (MoRIIO + all-gather, with the
 hybrid TP4×DP2 prefill on the `-hyb` cards) remains the performance recipe.
+
+## Open issue: stability under sustained load is not established
+
+One AgentX run (MI325X, EP8 MXFP4 card + MoRI-EP, buffer 256) ran `conformance_128k` c1 and c2
+with 0 errors, then the decode engine died ~31 minutes into c4: one decode DP rank exited, the
+other seven waited 60 s on the shared-memory broadcast and were shut down, and only then did the
+router report failed decode requests. The failing rank's stack trace was not captured, so the
+cause (MoRI-EP or otherwise) is unknown. The default all-gather recipe ran the full AgentX matrix
+on MI325X and MI300X with 0 errors. Before relying on MoRI-EP, repeat a long AgentX run with the
+full decode log kept.
