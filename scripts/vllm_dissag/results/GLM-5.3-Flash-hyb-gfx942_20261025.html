@@ -65,11 +65,14 @@ many concurrent cold long prompts.</p>
 </table>
 
 <h2>Images and tags</h2>
-<p>Both images are private on Docker Hub (<code>rocmshared/vllm-glm53flash</code>); to reproduce, build the Dockerfile.
-Digests checked against Docker Hub and the serving nodes on 25 Oct 2026.</p>
+<div class="box">Public prebuilt image (this PR's Dockerfile build):
+<code>docker pull rocm/vllm-dev:vllm-glm53flash-mad288-mxfp4-src</code> (digest <code>sha256:786eae0c54e2…</code>).
+Use it as <code>DOCKER_IMAGE_NAME</code>, or build the Dockerfile to get the same image.</div>
+<p>The <code>rocmshared/vllm-glm53flash</code> tags are private. Digests checked against Docker Hub and the serving nodes
+on 25–26 Oct 2026.</p>
 <table>
 <tr><th>Tag</th><th>Digest</th><th>What it is</th><th>Used for</th></tr>
-<tr><td><code>rocmshared/vllm-glm53flash:mad274-mxfp4-src</code></td><td><code>sha256:786eae0c54e2…</code></td>
+<tr><td><code>rocm/vllm-dev:vllm-glm53flash-mad288-mxfp4-src</code> (public)<br>= <code>rocmshared/vllm-glm53flash:mad274-mxfp4-src</code></td><td><code>sha256:786eae0c54e2…</code></td>
 <td>Built from this PR's Dockerfile. <code>/app/versions.txt</code>: vLLM <code>439eabe5c</code>, AITER <code>11a6be6e</code> +
 FlyDSL 0.2.2, MoRI <code>78b7a5f3</code>, router <code>076800bf</code> (rustc 1.91), libibverbs v39, base
 <code>rocm/vllm-dev:ci_base-build-01a0d6a8-…@sha256:bd7f0c9b…</code>. All 29 build-time fix markers present.</td>
