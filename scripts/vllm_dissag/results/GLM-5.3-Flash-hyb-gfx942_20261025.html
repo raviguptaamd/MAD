@@ -48,7 +48,7 @@ many concurrent cold long prompts.</p>
 
 <div class="kpis">
   <div class="kpi"><div class="v">1.9–2.6 s</div><div class="l">256K TTFT p50 at 1–4 sessions (MI325X)</div><div class="d">EP8: 4.4–6.1 s</div></div>
-  <div class="kpi"><div class="v">14</div><div class="l">256K capacity, MI325X (target: 2)</div><div class="d">EP8: 12</div></div>
+  <div class="kpi"><div class="v">14</div><div class="l">256K capacity, MI325X (target: 2)</div><div class="d">EP8: 12 · MI300X: 9 (EP8: 7)</div></div>
   <div class="kpi"><div class="v">460/460</div><div class="l">NIAH sweep, both checkpoints, both platforms</div><div class="d">0 disagreements</div></div>
   <div class="kpi"><div class="v">0</div><div class="l">errors in all 32 AgentX steps (16 per platform)</div></div>
 </div>
@@ -64,6 +64,48 @@ many concurrent cold long prompts.</p>
 <tr><td>FlyDSL</td><td>pypi</td><td>0.2.2</td></tr>
 </table>
 
+<h2>Images and tags</h2>
+<p>Both images are private on Docker Hub (<code>rocmshared/vllm-glm53flash</code>); to reproduce, build the Dockerfile.
+Digests checked against Docker Hub and the serving nodes on 25 Oct 2026.</p>
+<table>
+<tr><th>Tag</th><th>Digest</th><th>What it is</th><th>Used for</th></tr>
+<tr><td><code>rocmshared/vllm-glm53flash:mad274-mxfp4-src</code></td><td><code>sha256:786eae0c54e2…</code></td>
+<td>Built from this PR's Dockerfile. <code>/app/versions.txt</code>: vLLM <code>439eabe5c</code>, AITER <code>11a6be6e</code> +
+FlyDSL 0.2.2, MoRI <code>78b7a5f3</code>, router <code>076800bf</code> (rustc 1.91), libibverbs v39, base
+<code>rocm/vllm-dev:ci_base-build-01a0d6a8-…@sha256:bd7f0c9b…</code>. All 29 build-time fix markers present.</td>
+<td>MAD harness validation (below)</td></tr>
+<tr><td><code>rocmshared/vllm-glm53flash:release-20261018</code></td><td><code>sha256:c945c89cacf6…</code></td>
+<td>Overlay on <code>glmv5.3-flash.gfx942-20261002</code> (<code>sha256:41de80ce6f39…</code>). vLLM <code>1d239d555</code>, whose
+source tree is identical to <code>439eabe5c</code> (tree <code>f72b4f7ca0ce</code>); AITER, MoRI and router at the same pins as
+above. Bakes in <code>VLLM_ROCM_MXFP4_WEIGHT_ONLY=1</code> and <code>AITER_FLYDSL_W4_FP4=1</code>; the MXFP4 cards set both
+explicitly, so the PR image needs no baked env.</td>
+<td>Every accuracy, NIAH, AgentX and capacity number on this page (both platforms) and the MoRI-EP tests</td></tr>
+</table>
+<p class="note">The <code>release-20261018</code> tag was pushed twice: the first push (<code>sha256:1df760e1…</code>) lacked the
+two MXFP4 env settings and its runs were discarded. An earlier MI300X copy rebuilt on node 113 from
+<code>fp8-hybrid2</code> (Docker Hub rate limit) served only the 19–22 Oct runs; before the final MI300X runs both nodes
+pulled <code>sha256:c945c89c…</code> from Docker Hub.</p>
+
+<h2>Expert parallelism and KV transfer</h2>
+<p>All four GLM-5.3-Flash-gfx942 cards use <b>MoRIIO</b> (RDMA READ) for the prefill → decode KV transfer and vLLM's
+<code>allgather_reducescatter</code> for the expert all-to-all (<code>VLLM_ALL2ALL_BACKEND</code> and
+<code>DECODE_MORI_BACKEND</code>, overriding the <code>mori</code> default of connector combo 3). Each MoE layer all-gathers the
+tokens of the 8 ranks before the experts and reduce-scatters the outputs after them, over RCCL; inside full decode CUDA
+graphs with uniform batches, vLLM uses AITER's custom all-gather / reduce-scatter kernels instead (default on). All-reduce
+appears only in the TP4 attention of the <code>-hyb</code> prefill.</p>
+<p>MoRI-EP (<code>mori_high_throughput</code> prefill / <code>mori_low_latency</code> decode) is a tested opt-in, not the
+default (<code>skills/glm53-flash-gfx942/Recipe_enable_MoriEP.md</code>). EP8 cards, MXFP4, <code>release-20261018</code>:</p>
+<table>
+<tr><th>Check</th><th>MI325X</th><th>MI300X</th></tr>
+<tr><td>Bring-up (decode MoRI buffer 256 = decode max-num-batched-tokens)</td><td class="pass">clean, both checkpoints</td><td class="pass">clean</td></tr>
+<tr><td>Accuracy</td><td class="pass">NIAH 100K 20/20 (MXFP4), 40/40 (FP8); GSM8K 250 99.2% (MXFP4)</td><td>–</td></tr>
+<tr><td>Decode TPOT median, 8K/1K, 32 users: all-gather / MoRI-EP</td><td>16.74 / 16.75 ms (parity)</td><td>18.86 / 19.99 ms (+6%)</td></tr>
+<tr><td>Decode TPOT median, 8K/1K, 8 users: all-gather / MoRI-EP</td><td>13.93 / 14.20 ms (+1.9%)</td><td>14.29 / 15.29 ms (+7%)</td></tr>
+<tr><td>AgentX conformance_128k (EP8 prefill)</td><td class="warn">1 and 2 users 0 errors; at 4 users one decode rank exited after 31 min (cause not captured)</td><td>–</td></tr>
+</table>
+<p class="note">MoRI-EP is accurate and no faster at one node per leg; its stability under sustained load is open. The default
+stays all-gather / reduce-scatter.</p>
+
 <h2>What the -hyb cards add (models.yaml env)</h2>
 <table>
 <tr><th>Setting</th><th>Value</th><th>Effect</th></tr>
@@ -72,7 +114,7 @@ many concurrent cold long prompts.</p>
 <tr><td><code>GLM53_HETERO_TP_FANIN</code></td><td>1</td><td>KDA state fan-in from TP4 prefill to TP1 decode</td></tr>
 <tr><td><code>ROUTER_DECODE_DP_PIN</code></td><td>0</td><td>router does not pin a decode DP rank</td></tr>
 <tr><td><code>PREFILL_PREFIX_CACHE_RETENTION</code></td><td>17408</td><td>prefill <code>--prefix-cache-retention-interval 17408</code> (with prefix caching)</td></tr>
-<tr><td><code>VLLM_HTTP_TIMEOUT_KEEP_ALIVE</code></td><td>120</td><td>above the router's 50 s idle-pool timeout</td></tr>
+<tr><td><code>VLLM_HTTP_TIMEOUT_KEEP_ALIVE</code></td><td>120</td><td>above the router's 50 s idle-pool timeout (set on the EP8 cards too)</td></tr>
 </table>
 
 <h2>Accuracy</h2>
@@ -121,12 +163,67 @@ many concurrent cold long prompts.</p>
 <p class="note">MI300X at 256K c8 misses p50 by ~0.25 s on both checkpoints (MI300X prefill is ~20% slower than MI325X). All other steps pass.</p>
 
 <h2>Capacity per prefill pod (customer method; target: 2 users at 256K and 512K)</h2>
+<p>Highest number of concurrent users at which a step still meets every capacity SLO: TTFT p50 ≤ 20 s (256K) / ≤ 40 s
+(512K), tok/s/user p50 ≥ 60, 0 errors. One raw payload per user, 87.5% shared prefix per user (cold on the user's first
+request), 12.5% fresh tail per request, exactly 1024 output tokens; concurrency doubles from 1, then a binary search
+between the last pass and the first miss.</p>
 <table>
-<tr><th>Context</th><th>MI325X FP8</th><th>MI325X MXFP4</th><th>MI300X FP8</th><th>MI300X MXFP4</th></tr>
-<tr><td>256K</td><td class="pass">14</td><td class="pass">14</td><td class="pass">9</td><td class="pass">8</td></tr>
-<tr><td>512K</td><td class="pass">7</td><td class="pass">8</td><td class="pass">5</td><td class="pass">6</td></tr>
+<tr><th>Platform</th><th>Context</th><th class="n">EP8 FP8</th><th class="n">EP8 MXFP4</th><th class="n">HYB FP8</th><th class="n">HYB MXFP4</th><th class="n">HYB+R FP8</th><th class="n">HYB+R MXFP4</th></tr>
+<tr><td>MI325X</td><td>256K</td><td class="n">12</td><td class="n">12</td><td class="n">8</td><td class="n">10</td><td class="n pass">14</td><td class="n pass">14</td></tr>
+<tr><td>MI325X</td><td>512K</td><td class="n">7</td><td class="n">4 (4–7 on repeats)</td><td class="n">5</td><td class="n">5</td><td class="n pass">7</td><td class="n pass">8</td></tr>
+<tr><td>MI300X</td><td>256K</td><td class="n">7</td><td class="n">8</td><td class="n">7</td><td class="n">6</td><td class="n pass">9</td><td class="n pass">8</td></tr>
+<tr><td>MI300X</td><td>512K</td><td class="n">5</td><td class="n">3</td><td class="n">4</td><td class="n">4</td><td class="n pass">5</td><td class="n pass">6</td></tr>
 </table>
-<p class="note">All limited by TTFT. EP8 cards for comparison: MI325X 12/12 (256K) and 7/4-7 (512K).</p>
+<p class="note">EP8 = cards <code>GLM-5.3-Flash-{FP8,MXFP4}-gfx942</code>. HYB+R = the <code>-hyb</code> cards (TP4×DP2 prefill +
+retention 17408). HYB = TP4×DP2 without retention, an intermediate step and not a card. All 65 missed steps across
+the searches missed on TTFT, none on tok/s/user (lowest passing p50: 61.2) or errors (0 in every step). A 512K step lasts
+~300 s with 21–46 requests and its p50 depends on how many of them are a user's cold first request: MI325X repeats at 5–7
+users passed 3 of 6 (FP8) and 2 of 6 (MXFP4). Treat ±2 users at 512K as run-to-run spread.</p>
+
+<h3>Capacity search, final recipe (HYB+R), every step</h3>
+<h3>MI325X (g32 → g39)</h3>
+<table>
+<tr><th>Context</th><th class="n">Users</th><th>FP8: TTFT p50 s / tok/s/user p50</th><th>FP8</th><th>MXFP4: TTFT p50 s / tok/s/user p50</th><th>MXFP4</th></tr>
+<tr><td>256K</td><td class="n">1</td><td>3.27 / 87.3</td><td class="pass">pass</td><td>3.30 / 86.3</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">2</td><td>4.33 / 86.1</td><td class="pass">pass</td><td>3.59 / 82.0</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">4</td><td>4.06 / 80.6</td><td class="pass">pass</td><td>4.14 / 79.1</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">8</td><td>5.71 / 77.3</td><td class="pass">pass</td><td>5.69 / 74.1</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">12</td><td>15.63 / 70.0</td><td class="pass">pass</td><td>16.69 / 67.4</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">14</td><td>18.55 / 73.8</td><td class="pass">pass</td><td>19.82 / 70.7</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">15</td><td>22.11 / 71.3</td><td class="warn">miss (TTFT)</td><td>20.92 / 68.7</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>256K</td><td class="n">16</td><td>24.95 / 75.4</td><td class="warn">miss (TTFT)</td><td>26.84 / 71.9</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>512K</td><td class="n">1</td><td>7.10 / 86.3</td><td class="pass">pass</td><td>8.75 / 87.3</td><td class="pass">pass</td></tr>
+<tr><td>512K</td><td class="n">2</td><td>7.87 / 84.6</td><td class="pass">pass</td><td>8.56 / 82.3</td><td class="pass">pass</td></tr>
+<tr><td>512K</td><td class="n">4</td><td>9.32 / 81.5</td><td class="pass">pass</td><td>9.32 / 77.9</td><td class="pass">pass</td></tr>
+<tr><td>512K</td><td class="n">6</td><td>24.55 / 80.2</td><td class="pass">pass</td><td>–</td><td>–</td></tr>
+<tr><td>512K</td><td class="n">7</td><td>36.46 / 77.0</td><td class="pass">pass</td><td>–</td><td>–</td></tr>
+<tr><td>512K</td><td class="n">8</td><td>42.74 / 77.5</td><td class="warn">miss (TTFT)</td><td>10.99 / 70.2</td><td class="pass">pass</td></tr>
+<tr><td>512K</td><td class="n">9</td><td>–</td><td>–</td><td>48.84 / 75.9</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>512K</td><td class="n">10</td><td>–</td><td>–</td><td>70.31 / 80.1</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>512K</td><td class="n">12</td><td>–</td><td>–</td><td>73.22 / 77.0</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>512K</td><td class="n">16</td><td>–</td><td>–</td><td>143.77 / 80.7</td><td class="warn">miss (TTFT)</td></tr>
+</table>
+<h3>MI300X (148 → 113)</h3>
+<table>
+<tr><th>Context</th><th class="n">Users</th><th>FP8: TTFT p50 s / tok/s/user p50</th><th>FP8</th><th>MXFP4: TTFT p50 s / tok/s/user p50</th><th>MXFP4</th></tr>
+<tr><td>256K</td><td class="n">1</td><td>4.29 / 86.3</td><td class="pass">pass</td><td>4.41 / 84.4</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">2</td><td>4.53 / 82.2</td><td class="pass">pass</td><td>5.23 / 78.1</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">4</td><td>5.17 / 76.0</td><td class="pass">pass</td><td>5.61 / 72.5</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">8</td><td>7.82 / 67.9</td><td class="pass">pass</td><td>8.01 / 63.6</td><td class="pass">pass</td></tr>
+<tr><td>256K</td><td class="n">9</td><td>9.87 / 69.2</td><td class="pass">pass</td><td>30.28 / 68.7</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>256K</td><td class="n">10</td><td>30.12 / 69.8</td><td class="warn">miss (TTFT)</td><td>25.94 / 62.8</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>256K</td><td class="n">12</td><td>34.69 / 68.1</td><td class="warn">miss (TTFT)</td><td>36.57 / 68.4</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>256K</td><td class="n">16</td><td>60.52 / 72.7</td><td class="warn">miss (TTFT)</td><td>55.96 / 67.2</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>512K</td><td class="n">1</td><td>9.75 / 83.7</td><td class="pass">pass</td><td>9.70 / 82.7</td><td class="pass">pass</td></tr>
+<tr><td>512K</td><td class="n">2</td><td>11.33 / 81.2</td><td class="pass">pass</td><td>10.53 / 80.2</td><td class="pass">pass</td></tr>
+<tr><td>512K</td><td class="n">4</td><td>17.19 / 75.8</td><td class="pass">pass</td><td>12.79 / 69.4</td><td class="pass">pass</td></tr>
+<tr><td>512K</td><td class="n">5</td><td>15.90 / 72.0</td><td class="pass">pass</td><td>–</td><td>–</td></tr>
+<tr><td>512K</td><td class="n">6</td><td>43.84 / 71.5</td><td class="warn">miss (TTFT)</td><td>19.81 / 66.2</td><td class="pass">pass</td></tr>
+<tr><td>512K</td><td class="n">7</td><td>–</td><td>–</td><td>70.99 / 71.7</td><td class="warn">miss (TTFT)</td></tr>
+<tr><td>512K</td><td class="n">8</td><td>76.43 / 73.9</td><td class="warn">miss (TTFT)</td><td>87.38 / 72.9</td><td class="warn">miss (TTFT)</td></tr>
+</table>
+<p class="note">Rows sorted by users (the search ran them doubling, then bisecting); – = step not run for that
+checkpoint.</p>
 
 <h2>MAD harness validation</h2>
 <p>The <code>-hyb</code> cards launch correctly through the MAD unified launcher (<code>run_xPyD_models.slurm</code>) with
@@ -150,7 +247,7 @@ requests, 0 measured errors, TTFT p50 6.89 s at concurrency 16.</p>
 </ul>
 
 <footer>
-  Generated 25 Oct 2026. Data: <code>reports/customer_criteria/data/</code> in the workspace.
+  Generated 25 Oct 2026, updated 26 Oct 2026. Data: <code>reports/customer_criteria/data/</code> in the workspace.
   Cards: <code>GLM-5.3-Flash-{FP8,MXFP4}-gfx942-hyb</code> in <code>models.yaml</code>.
   Tests: gate_check 37/37, argv_assert 77/77. All 48 EP8 card dry-run outputs byte-identical.
 </footer>
